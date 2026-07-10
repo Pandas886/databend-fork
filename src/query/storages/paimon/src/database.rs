@@ -97,7 +97,12 @@ impl Database for PaimonDatabase {
         let paimon_table =
             map_paimon_result(self.catalog.paimon_catalog().get_table(&identifier).await)?;
         if let Some(kind) = kind {
-            let _ = branch;
+            let paimon_table = match branch {
+                Some(branch) => {
+                    resolve_branch_table(&paimon_table, &base, &branch).await?
+                }
+                None => paimon_table,
+            };
             return PaimonSystemTable::create(
                 self.catalog.info(),
                 table_name.to_string(),
@@ -155,4 +160,30 @@ impl Database for PaimonDatabase {
     async fn rename_table(&self, _req: RenameTableReq) -> Result<RenameTableReply> {
         Err(read_only("rename_table"))
     }
+}
+
+/// Point a base table at a named branch so system-table readers use
+/// `{table}/branch/branch-{name}` metadata (same layout as Paimon managers).
+async fn resolve_branch_table(
+    base: &paimon::Table,
+    base_name: &str,
+    branch: &str,
+) -> Result<paimon::Table> {
+    let branch_location = format!("{}/branch/branch-{}", base.location(), branch);
+    let schema_manager = base.schema_manager().with_branch(branch);
+    let schema = match map_paimon_result(schema_manager.latest().await)? {
+        Some(schema) => (*schema).clone(),
+        None => base.schema().clone(),
+    };
+    let identifier = Identifier::new(
+        base.identifier().database(),
+        format!("{base_name}$branch_{branch}"),
+    );
+    Ok(paimon::Table::new(
+        base.file_io().clone(),
+        identifier,
+        branch_location,
+        schema,
+        base.rest_env().cloned(),
+    ))
 }
