@@ -22,9 +22,14 @@ use databend_common_expression::types::NumberDataType;
 use databend_common_sql::ColumnBindingBuilder;
 use databend_common_sql::Symbol;
 use databend_common_sql::Visibility;
+use databend_common_sql::executor::physical_plans::FragmentKind;
 use databend_query::interpreters::build_insert_select_physical_plan;
 use databend_query::physical_plans::ConstantTableScan;
+use databend_query::physical_plans::DistributedInsertSelect;
+use databend_query::physical_plans::Exchange;
+use databend_query::physical_plans::PaimonWriteRoute;
 use databend_query::physical_plans::PhysicalPlan;
+use databend_query::physical_plans::PhysicalPlanCast;
 use databend_query::physical_plans::PhysicalPlanMeta;
 use databend_storages_common_table_meta::meta::TableMetaTimestamps;
 use paimon::Catalog;
@@ -142,8 +147,30 @@ async fn test_paimon_write_route_plan() -> databend_common_exception::Result<()>
         "pk plan missing GlobalShuffle:\n{pk_text}"
     );
     assert!(
+        pk_text.contains("Merge"),
+        "pk plan missing Merge Exchange for commit gather:\n{pk_text}"
+    );
+    assert!(
         pk_text.contains("DistributedInsertSelect"),
         "pk plan missing DistributedInsertSelect:\n{pk_text}"
+    );
+
+    // Merge → DistributedInsertSelect → GlobalShuffle → PaimonWriteRoute
+    let outer = Exchange::from_physical_plan(&pk_plan)
+        .expect("pk plan must start with Merge Exchange");
+    assert_eq!(outer.kind, FragmentKind::Merge);
+    let insert = DistributedInsertSelect::from_physical_plan(&outer.input)
+        .expect("Merge must wrap DistributedInsertSelect");
+    let shuffle = Exchange::from_physical_plan(&insert.input)
+        .expect("insert input must be GlobalShuffle Exchange");
+    assert_eq!(shuffle.kind, FragmentKind::GlobalShuffle);
+    assert!(
+        !shuffle.allow_adjust_parallelism,
+        "GlobalShuffle must keep allow_adjust_parallelism=false"
+    );
+    assert!(
+        PaimonWriteRoute::from_physical_plan(&shuffle.input).is_some(),
+        "GlobalShuffle must wrap PaimonWriteRoute"
     );
 
     let append_table = databend_table(&warehouse.warehouse, &append_id).await;

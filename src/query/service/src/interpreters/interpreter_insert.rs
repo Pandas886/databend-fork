@@ -33,6 +33,7 @@ use databend_common_expression::types::DataType;
 use databend_common_expression::types::UInt64Type;
 use databend_common_meta_app::schema::Constraint;
 use databend_common_pipeline::sources::AsyncSourcer;
+use databend_common_pipeline_transforms::TransformPipelineHelper;
 #[cfg(feature = "storage-stage")]
 use databend_common_pipeline_transforms::columns::TransformAddConstColumns;
 use databend_common_sql::ColumnBinding;
@@ -63,6 +64,7 @@ use crate::interpreters::common::dml_build_update_stream_req;
 use crate::physical_plans::ConstantTableScan;
 use crate::physical_plans::DistributedInsertSelect;
 use crate::physical_plans::Exchange;
+use crate::physical_plans::IPhysicalPlan;
 use crate::physical_plans::PAIMON_ROUTE_KEY_NAME;
 use crate::physical_plans::PaimonWriteRoute;
 use crate::physical_plans::PhysicalPlan;
@@ -145,15 +147,12 @@ pub fn build_insert_select_physical_plan(
             table_meta_timestamps,
             meta: PhysicalPlanMeta::new("DistributedInsertSelect"),
         });
-        // PK route already injects GlobalShuffle; keep select Merge only for non-PK tables.
-        if needs_pk_route {
-            Ok(insert)
-        } else {
-            Ok(exchange.derive(vec![insert]))
-        }
+        // Keep outer Merge (or other top exchange) so writer metas gather on the coordinator.
+        // GlobalShuffle for PK route lives inside `insert.input`.
+        Ok(exchange.derive(vec![insert]))
     } else {
         let input = wrap_paimon_write_distribution(select_plan, table)?;
-        Ok(PhysicalPlan::new(DistributedInsertSelect {
+        let insert = PhysicalPlan::new(DistributedInsertSelect {
             input,
             table_info,
             select_schema,
@@ -162,7 +161,20 @@ pub fn build_insert_select_physical_plan(
             cast_needed,
             table_meta_timestamps,
             meta: PhysicalPlanMeta::new("DistributedInsertSelect"),
-        }))
+        });
+        // VALUES / local select has no top Merge; synthesize one for PK so commit metas gather.
+        if needs_pk_route {
+            Ok(PhysicalPlan::new(Exchange {
+                input: insert,
+                kind: FragmentKind::Merge,
+                keys: vec![],
+                allow_adjust_parallelism: true,
+                ignore_exchange: false,
+                meta: PhysicalPlanMeta::new("Exchange"),
+            }))
+        } else {
+            Ok(insert)
+        }
     }
 }
 
