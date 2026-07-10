@@ -212,10 +212,7 @@ impl PaimonTable {
 
     pub fn try_from_table(tbl: &dyn Table) -> Result<&Self> {
         tbl.as_any().downcast_ref::<Self>().ok_or_else(|| {
-            ErrorCode::Internal(format!(
-                "expects Paimon engine, but got {}",
-                tbl.engine()
-            ))
+            ErrorCode::Internal(format!("expects Paimon engine, but got {}", tbl.engine()))
         })
     }
 

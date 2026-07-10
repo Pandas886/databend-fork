@@ -59,9 +59,8 @@ impl AsyncSink for PaimonCommitSink {
 
     async fn consume(&mut self, block: DataBlock) -> Result<bool> {
         if let Some(meta) = block.get_meta() {
-            let meta = PaimonCommitMeta::downcast_ref_from(meta).ok_or_else(|| {
-                ErrorCode::Internal("invalid Paimon commit meta".to_string())
-            })?;
+            let meta = PaimonCommitMeta::downcast_ref_from(meta)
+                .ok_or_else(|| ErrorCode::Internal("invalid Paimon commit meta".to_string()))?;
             self.messages.extend(meta.clone().into_messages()?);
         }
         Ok(false)

@@ -34,8 +34,8 @@ pub struct TransformPaimonWriteRoute {
 
 impl TransformPaimonWriteRoute {
     pub fn try_create(schema: &TableSchema) -> Result<Self> {
-        let arrow_schema = paimon::arrow::build_target_arrow_schema(schema.fields())
-            .map_err(map_paimon_error)?;
+        let arrow_schema =
+            paimon::arrow::build_target_arrow_schema(schema.fields()).map_err(map_paimon_error)?;
         Ok(Self {
             router: PaimonWriteRouter::try_create(schema)?,
             arrow_schema,

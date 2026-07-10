@@ -90,11 +90,14 @@ mod lane_observe {
     use databend_common_exception::ErrorCode;
     use databend_common_exception::Result;
 
-    static NEXT_LANE_ID: AtomicU64 = AtomicU64::new(1);
-    static OBSERVATIONS: OnceLock<Mutex<HashMap<(String, Vec<u8>), (String, u64)>>> =
-        OnceLock::new();
+    type RouteObserveKey = (String, Vec<u8>);
+    type RouteObserveValue = (String, u64);
+    type RouteObservations = HashMap<RouteObserveKey, RouteObserveValue>;
 
-    fn observations() -> &'static Mutex<HashMap<(String, Vec<u8>), (String, u64)>> {
+    static NEXT_LANE_ID: AtomicU64 = AtomicU64::new(1);
+    static OBSERVATIONS: OnceLock<Mutex<RouteObservations>> = OnceLock::new();
+
+    fn observations() -> &'static Mutex<RouteObservations> {
         OBSERVATIONS.get_or_init(|| Mutex::new(HashMap::new()))
     }
 
@@ -138,10 +141,7 @@ mod lane_observe {
     }
 
     pub fn count() -> usize {
-        observations()
-            .lock()
-            .map(|map| map.len())
-            .unwrap_or(0)
+        observations().lock().map(|map| map.len()).unwrap_or(0)
     }
 }
 
@@ -187,7 +187,8 @@ impl PaimonWriteRouter {
         }
 
         let fields = schema.fields().to_vec();
-        let partition_indices = resolve_field_indices(&fields, partition_keys, "partition", &config_hint)?;
+        let partition_indices =
+            resolve_field_indices(&fields, partition_keys, "partition", &config_hint)?;
         let bucket_key_indices =
             resolve_field_indices(&fields, &bucket_keys, "bucket key", &config_hint)?;
 
@@ -199,19 +200,12 @@ impl PaimonWriteRouter {
         })
     }
 
-    pub fn route_batch(
-        &self,
-        batch: &arrow_array::RecordBatch,
-    ) -> Result<Vec<PaimonWriteRoute>> {
-        let partitions = paimon::spec::batch_to_serialized_bytes(
-            batch,
-            &self.partition_indices,
-            &self.fields,
-        )
-        .map_err(map_paimon_error)?;
-        let hashes =
-            paimon::spec::batch_hash_codes(batch, &self.bucket_key_indices, &self.fields)
+    pub fn route_batch(&self, batch: &arrow_array::RecordBatch) -> Result<Vec<PaimonWriteRoute>> {
+        let partitions =
+            paimon::spec::batch_to_serialized_bytes(batch, &self.partition_indices, &self.fields)
                 .map_err(map_paimon_error)?;
+        let hashes = paimon::spec::batch_hash_codes(batch, &self.bucket_key_indices, &self.fields)
+            .map_err(map_paimon_error)?;
         Ok(partitions
             .into_iter()
             .zip(hashes)

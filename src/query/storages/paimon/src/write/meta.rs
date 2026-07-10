@@ -48,9 +48,10 @@ impl PaimonCommitMeta {
     pub fn try_from_messages(messages: Vec<CommitMessage>) -> Result<Self> {
         let mut messages_json = Vec::with_capacity(messages.len());
         for message in messages {
-            let json = serde_json::to_string(&CommitMessageWire::from(&message)).map_err(|err| {
-                ErrorCode::Internal(format!("Failed to serialize Paimon CommitMessage: {err}"))
-            })?;
+            let json =
+                serde_json::to_string(&CommitMessageWire::from(&message)).map_err(|err| {
+                    ErrorCode::Internal(format!("Failed to serialize Paimon CommitMessage: {err}"))
+                })?;
             messages_json.push(json);
         }
         Ok(Self { messages_json })

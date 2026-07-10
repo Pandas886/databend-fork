@@ -318,7 +318,8 @@ impl Interpreter for InsertInterpreter {
                 // the SELECT insert physical plan so single-node uses local channel repartition.
                 if is_fixed_bucket_primary_key(&table)? {
                     let insert_schema = self.plan.dest_schema();
-                    let (values_plan, bindings) = values_to_constant_scan(rows, insert_schema.clone())?;
+                    let (values_plan, bindings) =
+                        values_to_constant_scan(rows, insert_schema.clone())?;
                     let select_schema = values_plan.output_schema()?;
                     let mut insert_plan = build_insert_select_physical_plan(
                         values_plan,
