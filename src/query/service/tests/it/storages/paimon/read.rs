@@ -123,22 +123,84 @@ async fn test_show_databases_in_paimon_catalog() -> databend_common_exception::R
         .await?;
     let block = DataBlock::concat(&blocks)?;
     let db_name_col = StringType::try_downcast_column(
-        block.get_by_offset(0)
+        block
+            .get_by_offset(0)
             .as_column()
             .expect("database name column"),
     )
     .expect("database names");
     let db_names = (0..block.num_rows())
-        .map(|idx| StringType::index_column(&db_name_col, idx).unwrap().to_string())
+        .map(|idx| {
+            StringType::index_column(&db_name_col, idx)
+                .unwrap()
+                .to_string()
+        })
         .collect::<Vec<_>>();
 
+    assert_eq!(db_names, vec![
+        "db".to_string(),
+        "information_schema".to_string(),
+        "system".to_string(),
+    ]);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_show_tables_in_paimon_catalog() -> databend_common_exception::Result<()> {
+    let wh = TestWarehouse::new();
+    let _ = setup_append_table(&wh.warehouse).await;
+    let fixture = setup_paimon_fixture().await?;
+    fixture.execute_command(drop_paimon_catalog_sql()).await?;
+    fixture
+        .execute_command(&create_paimon_catalog_sql(&wh.warehouse))
+        .await?;
+
+    let blocks = fixture
+        .execute_query("SHOW TABLES FROM paimon_it.db")
+        .await?
+        .try_collect::<Vec<_>>()
+        .await?;
+    let block = DataBlock::concat(&blocks)?;
+    let table_name_col = StringType::try_downcast_column(
+        block
+            .get_by_offset(0)
+            .as_column()
+            .expect("table name column"),
+    )
+    .expect("table names");
+    let table_names = (0..block.num_rows())
+        .map(|idx| {
+            StringType::index_column(&table_name_col, idx)
+                .unwrap()
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(table_names, vec!["append_t".to_string()]);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_show_tables_rejects_unknown_paimon_database() -> databend_common_exception::Result<()>
+{
+    let wh = TestWarehouse::new();
+    let _ = setup_append_table(&wh.warehouse).await;
+    let fixture = setup_paimon_fixture().await?;
+    fixture.execute_command(drop_paimon_catalog_sql()).await?;
+    fixture
+        .execute_command(&create_paimon_catalog_sql(&wh.warehouse))
+        .await?;
+
+    let err = match fixture
+        .execute_query("SHOW TABLES FROM paimon_it.missing")
+        .await
+    {
+        Ok(_) => panic!("missing Paimon database must be rejected"),
+        Err(err) => err,
+    };
     assert_eq!(
-        db_names,
-        vec![
-            "db".to_string(),
-            "information_schema".to_string(),
-            "system".to_string(),
-        ]
+        err.code(),
+        databend_common_exception::ErrorCode::UNKNOWN_DATABASE
     );
     Ok(())
 }
