@@ -97,18 +97,13 @@ impl Database for PaimonDatabase {
         let paimon_table =
             map_paimon_result(self.catalog.paimon_catalog().get_table(&identifier).await)?;
         if let Some(kind) = kind {
-            let object = match branch {
-                Some(branch) => format!("{base}$branch_{branch}"),
-                None => base,
-            };
-            return Ok(PaimonSystemTable::create(
+            let _ = branch;
+            return PaimonSystemTable::create(
                 self.catalog.info(),
                 table_name.to_string(),
                 kind,
-                self.catalog.paimon_catalog(),
-                Identifier::new(self.database_name.clone(), object),
-                paimon_table,
-            ));
+                &paimon_table,
+            );
         }
         PaimonTable::from_paimon_table(
             self.catalog.info(),

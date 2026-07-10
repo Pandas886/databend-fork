@@ -109,9 +109,12 @@ use paimon::CatalogFactory;
 use paimon::Options;
 use paimon::catalog::Catalog as PaimonInnerCatalog;
 
+use crate::ParsedName;
 use crate::error::map_paimon_error;
 use crate::error::map_paimon_result;
 use crate::error::read_only;
+use crate::parse_system_name;
+use crate::system::PaimonSystemTable;
 use crate::table::PaimonTable;
 
 #[derive(Debug)]
@@ -258,7 +261,12 @@ impl Catalog for PaimonCatalog {
     }
 
     fn get_table_by_info(&self, table_info: &TableInfo) -> Result<Arc<dyn Table>> {
-        PaimonTable::try_create(table_info.clone()).map(|table| table.into())
+        // System tables (`base$kind`) rebuild into `PaimonSystemTable`; everything
+        // else is a base data table.
+        match parse_system_name(&table_info.name) {
+            ParsedName::System { .. } => PaimonSystemTable::try_create(table_info.clone()),
+            _ => PaimonTable::try_create(table_info.clone()).map(|table| table.into()),
+        }
     }
 
     async fn get_table_meta_by_id(&self, _table_id: MetaId) -> Result<Option<SeqV<TableMeta>>> {
