@@ -16,15 +16,15 @@ mod common;
 
 use std::sync::Arc;
 
-use paimon::Catalog;
-use common::{
-    filesystem_catalog, paimon_catalog, setup_append_table, TestWarehouse,
-};
+use common::TestWarehouse;
+use common::filesystem_catalog;
+use common::paimon_catalog;
+use common::setup_append_table;
 use databend_common_catalog::catalog::Catalog as DatabendCatalog;
-use databend_common_catalog::database::Database;
-use databend_common_meta_app::schema::TableNameIdent;
 use databend_common_meta_app::schema::RenameTableReq;
+use databend_common_meta_app::schema::TableNameIdent;
 use databend_common_meta_app::tenant::Tenant;
+use paimon::Catalog;
 
 #[tokio::test]
 async fn test_filesystem_catalog_list_and_read_only() {
@@ -43,10 +43,9 @@ async fn test_filesystem_catalog_list_and_read_only() {
     assert_eq!(db_names, vec!["db".to_string()]);
 
     let db = catalog.get_database(&tenant, "db").await.expect("get db");
-    assert_eq!(
-        db.list_tables_names().await.expect("list tables"),
-        vec!["append_t".to_string()]
-    );
+    assert_eq!(db.list_tables_names().await.expect("list tables"), vec![
+        "append_t".to_string()
+    ]);
     let table = db.get_table("append_t").await.expect("get table");
     assert_eq!(table.engine(), "PAIMON");
     assert_eq!(table.schema().fields().len(), 2);
@@ -67,10 +66,11 @@ async fn test_filesystem_catalog_list_and_read_only() {
         .create_database(databend_common_meta_app::schema::CreateDatabaseReq {
             override_existing: false,
             catalog_name: None,
-            name_ident: databend_common_meta_app::schema::database_name_ident::DatabaseNameIdent::new(
-                tenant.clone(),
-                "new_db",
-            ),
+            name_ident:
+                databend_common_meta_app::schema::database_name_ident::DatabaseNameIdent::new(
+                    tenant.clone(),
+                    "new_db",
+                ),
             meta: databend_common_meta_app::schema::DatabaseMeta::default(),
         })
         .await

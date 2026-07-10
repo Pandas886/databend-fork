@@ -17,19 +17,18 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use databend_common_catalog::catalog::StorageDescription;
+use databend_common_catalog::plan::DataSourceInfo;
 use databend_common_catalog::plan::DataSourcePlan;
+use databend_common_catalog::plan::PartInfoPtr;
 use databend_common_catalog::plan::PartStatistics;
 use databend_common_catalog::plan::Partitions;
-use databend_common_catalog::plan::PartInfoPtr;
 use databend_common_catalog::plan::PartitionsShuffleKind;
 use databend_common_catalog::plan::PushDownInfo;
 use databend_common_catalog::table::DistributionLevel;
 use databend_common_catalog::table::Table;
 use databend_common_catalog::table_args::TableArgs;
 use databend_common_catalog::table_context::TableContext;
-use databend_common_catalog::plan::DataSourceInfo;
 use databend_common_exception::ErrorCode;
 use databend_common_exception::Result;
 use databend_common_expression::TableSchema;
@@ -108,10 +107,7 @@ impl PaimonTable {
             ErrorCode::Internal(format!("serialize paimon table descriptor failed: {err:?}"))
         })?;
         let mut engine_options = BTreeMap::new();
-        engine_options.insert(
-            PAIMON_TABLE_DESCRIPTOR_KEY.to_string(),
-            descriptor_json,
-        );
+        engine_options.insert(PAIMON_TABLE_DESCRIPTOR_KEY.to_string(), descriptor_json);
         let info = TableInfo {
             ident: TableIdent::new(0, 0),
             desc: format!(
@@ -137,20 +133,13 @@ impl PaimonTable {
         }))
     }
 
-    fn descriptor(&self) -> &PaimonTableDescriptor {
-        &self.descriptor
-    }
-
     async fn loaded_table(&self) -> Result<&paimon::Table> {
         self.table
             .get_or_try_init(|| async {
                 let options = options_from_map(&self.descriptor.catalog_options)?;
                 let catalog = map_paimon_result(CatalogFactory::create(options).await)?;
-                let loaded = map_paimon_result(
-                    catalog
-                        .get_table(&self.descriptor.identifier)
-                        .await,
-                )?;
+                let loaded =
+                    map_paimon_result(catalog.get_table(&self.descriptor.identifier).await)?;
                 Ok(paimon::Table::new(
                     loaded.file_io().clone(),
                     self.descriptor.identifier.clone(),
@@ -239,7 +228,9 @@ pub(crate) fn parse_descriptor_from_plan(plan: &DataSourcePlan) -> Result<Paimon
             ErrorCode::Internal("missing paimon table descriptor in engine options".to_string())
         })?;
     serde_json::from_str(raw).map_err(|err| {
-        ErrorCode::Internal(format!("deserialize paimon table descriptor failed: {err:?}"))
+        ErrorCode::Internal(format!(
+            "deserialize paimon table descriptor failed: {err:?}"
+        ))
     })
 }
 
@@ -252,7 +243,9 @@ fn parse_descriptor(info: &TableInfo) -> Result<PaimonTableDescriptor> {
             ErrorCode::Internal("missing paimon table descriptor in engine options".to_string())
         })?;
     serde_json::from_str(raw).map_err(|err| {
-        ErrorCode::Internal(format!("deserialize paimon table descriptor failed: {err:?}"))
+        ErrorCode::Internal(format!(
+            "deserialize paimon table descriptor failed: {err:?}"
+        ))
     })
 }
 
@@ -265,8 +258,8 @@ fn options_from_map(options: &HashMap<String, String>) -> Result<Options> {
 }
 
 pub(crate) fn paimon_schema_to_databend(schema: &PaimonTableSchema) -> Result<TableSchema> {
-    let arrow_schema = paimon::arrow::build_target_arrow_schema(schema.fields())
-        .map_err(map_paimon_error)?;
+    let arrow_schema =
+        paimon::arrow::build_target_arrow_schema(schema.fields()).map_err(map_paimon_error)?;
     TableSchema::try_from(arrow_schema.as_ref()).map_err(ErrorCode::from_std_error)
 }
 
@@ -295,7 +288,7 @@ impl Table for PaimonTable {
     #[async_backtrace::framed]
     async fn read_partitions(
         &self,
-        ctx: Arc<dyn TableContext>,
+        _ctx: Arc<dyn TableContext>,
         push_downs: Option<PushDownInfo>,
         _dry_run: bool,
     ) -> Result<(PartStatistics, Partitions)> {

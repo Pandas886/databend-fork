@@ -127,6 +127,7 @@ impl CatalogCreator for PaimonCreator {
 #[educe(Debug)]
 pub struct PaimonCatalog {
     info: Arc<CatalogInfo>,
+    #[educe(Debug(ignore))]
     catalog_options: HashMap<String, String>,
     #[educe(Debug(ignore))]
     ctl: Arc<dyn PaimonInnerCatalog>,
@@ -181,7 +182,7 @@ impl Catalog for PaimonCatalog {
     }
 
     fn support_partition(&self) -> bool {
-        true
+        false
     }
 
     fn is_external(&self) -> bool {
@@ -197,7 +198,10 @@ impl Catalog for PaimonCatalog {
         if !self.exists_database(tenant, db_name).await? {
             return Err(ErrorCode::UnknownDatabase(db_name.to_string()));
         }
-        Ok(Arc::new(PaimonDatabase::create(self.clone(), db_name.to_string())))
+        Ok(Arc::new(PaimonDatabase::create(
+            self.clone(),
+            db_name.to_string(),
+        )))
     }
 
     #[async_backtrace::framed]
@@ -333,12 +337,11 @@ impl Catalog for PaimonCatalog {
     }
 
     #[async_backtrace::framed]
-    async fn list_tables(
-        &self,
-        tenant: &Tenant,
-        db_name: &str,
-    ) -> Result<Vec<Arc<dyn Table>>> {
-        self.get_database(tenant, db_name).await?.list_tables().await
+    async fn list_tables(&self, tenant: &Tenant, db_name: &str) -> Result<Vec<Arc<dyn Table>>> {
+        self.get_database(tenant, db_name)
+            .await?
+            .list_tables()
+            .await
     }
 
     #[async_backtrace::framed]
@@ -532,6 +535,6 @@ impl Catalog for PaimonCatalog {
     }
 
     fn default_table_engine(&self) -> Engine {
-        Engine::Iceberg
+        Engine::Paimon
     }
 }

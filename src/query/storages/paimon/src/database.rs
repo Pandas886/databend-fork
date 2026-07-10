@@ -49,16 +49,16 @@ impl PaimonDatabase {
     pub fn create(catalog: PaimonCatalog, database_name: String) -> Self {
         let info = DatabaseInfo {
             database_id: DatabaseId::new(0),
-            name_ident: DatabaseNameIdent::new(Tenant::new_literal("dummy"), database_name.as_str()),
-            meta: SeqV::new(
-                0,
-                DatabaseMeta {
-                    engine: crate::PAIMON_CATALOG.to_string(),
-                    created_on: chrono::Utc::now(),
-                    updated_on: chrono::Utc::now(),
-                    ..Default::default()
-                },
+            name_ident: DatabaseNameIdent::new(
+                Tenant::new_literal("dummy"),
+                database_name.as_str(),
             ),
+            meta: SeqV::new(0, DatabaseMeta {
+                engine: crate::PAIMON_CATALOG.to_string(),
+                created_on: chrono::Utc::now(),
+                updated_on: chrono::Utc::now(),
+                ..Default::default()
+            }),
         };
         Self {
             catalog,
@@ -81,18 +81,13 @@ impl Database for PaimonDatabase {
     #[async_backtrace::framed]
     async fn get_table(&self, table_name: &str) -> Result<Arc<dyn Table>> {
         let identifier = Identifier::new(self.database_name.clone(), table_name);
-        let paimon_table = map_paimon_result(
-            self.catalog
-                .paimon_catalog()
-                .get_table(&identifier)
-                .await,
-        )?;
+        let paimon_table =
+            map_paimon_result(self.catalog.paimon_catalog().get_table(&identifier).await)?;
         PaimonTable::from_paimon_table(
             self.catalog.info(),
             self.catalog.catalog_options().clone(),
             paimon_table,
         )
-        .map(|table| table.into())
     }
 
     #[async_backtrace::framed]

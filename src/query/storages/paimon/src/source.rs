@@ -31,18 +31,22 @@ use databend_common_pipeline::core::ProcessorPtr;
 use futures::StreamExt;
 use paimon::CatalogFactory;
 use paimon::Options;
+use paimon::catalog::Catalog;
 use paimon::table::ArrowRecordBatchStream;
 
 use crate::PaimonPartInfo;
 use crate::error::map_paimon_result;
 use crate::predicate::apply_pushdowns;
-use crate::table::parse_descriptor_from_plan;
+use crate::table::PaimonTableDescriptor;
 use crate::table::paimon_schema_to_databend;
+use crate::table::parse_descriptor_from_plan;
 
 pub struct PaimonTableSource {
     output: Arc<OutputPort>,
     ctx: Arc<dyn TableContext>,
     plan: DataSourcePlan,
+    descriptor: PaimonTableDescriptor,
+    catalog: Option<Arc<dyn Catalog>>,
     output_schema: DataSchemaRef,
     scan_progress: Arc<Progress>,
     stream: Option<ArrowRecordBatchStream>,
@@ -55,6 +59,7 @@ impl PaimonTableSource {
         output: Arc<OutputPort>,
         plan: DataSourcePlan,
     ) -> Result<ProcessorPtr> {
+        let descriptor = parse_descriptor_from_plan(&plan)?;
         let output_schema: DataSchemaRef = if let Some(projection) = plan
             .push_downs
             .as_ref()
@@ -71,6 +76,8 @@ impl PaimonTableSource {
             output,
             ctx,
             plan,
+            descriptor,
+            catalog: None,
             output_schema,
             scan_progress,
             stream: None,
@@ -87,29 +94,27 @@ impl PaimonTableSource {
             .as_any()
             .downcast_ref::<PaimonPartInfo>()
             .ok_or_else(|| ErrorCode::Internal("invalid paimon partition type".to_string()))?;
-        let descriptor = parse_descriptor_from_plan(&self.plan)?;
-        let options = {
+        if self.catalog.is_none() {
             let mut paimon_options = Options::new();
-            for (key, value) in &descriptor.catalog_options {
+            for (key, value) in &self.descriptor.catalog_options {
                 paimon_options.set(key, value.clone());
             }
-            paimon_options
-        };
-        let catalog = map_paimon_result(CatalogFactory::create(options).await)?;
-        let loaded = map_paimon_result(catalog.get_table(&descriptor.identifier).await)?;
+            self.catalog = Some(map_paimon_result(
+                CatalogFactory::create(paimon_options).await,
+            )?);
+        }
+        let catalog = self.catalog.as_ref().expect("paimon catalog must exist");
+        let loaded = map_paimon_result(catalog.get_table(&self.descriptor.identifier).await)?;
         let table = paimon::Table::new(
             loaded.file_io().clone(),
-            descriptor.identifier.clone(),
-            descriptor.location.clone(),
-            descriptor.schema.clone(),
+            self.descriptor.identifier.clone(),
+            self.descriptor.location.clone(),
+            self.descriptor.schema.clone(),
             None,
         );
         let databend_schema = paimon_schema_to_databend(table.schema())?;
-        let (read_builder, _) = apply_pushdowns(
-            &table,
-            self.plan.push_downs.as_ref(),
-            &databend_schema,
-        );
+        let (read_builder, _) =
+            apply_pushdowns(&table, self.plan.push_downs.as_ref(), &databend_schema);
         let split = part.split.clone().try_into()?;
         let table_read = map_paimon_result(read_builder.new_read())?;
         let stream = map_paimon_result(table_read.to_arrow(&[split]))?;

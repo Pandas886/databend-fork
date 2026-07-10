@@ -26,7 +26,7 @@ storage-stage = [
 disable_initial_exec_tls = ["databend-common-base/disable_initial_exec_tls"]
 jemalloc = ["databend-common-storages-system/jemalloc"]
 memory-profiling = ["databend-common-base/memory-profiling", "databend-common-http/memory-profiling"]
-storage-hdfs = ["opendal/services-hdfs", "databend-common-storage/storage-hdfs"]
+storage-hdfs = ["opendal/services-hdfs", "databend-common-storage/storage-hdfs", "databend-common-storages-paimon/storage-hdfs"]
 
 [dependencies]
 anyhow = { workspace = true }

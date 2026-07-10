@@ -607,9 +607,10 @@ async fn paimon_catalog_missing_warehouse() -> Result<()> {
     let fixture = LiteTableContext::create().await?;
     let sql = "CREATE CATALOG p TYPE = PAIMON CONNECTION = (METASTORE='filesystem')";
     let err = plan_sql(&fixture, sql).await.unwrap_err();
-    assert!(err
-        .message()
-        .contains("warehouse for paimon catalog is not specified"));
+    assert!(
+        err.message()
+            .contains("warehouse for paimon catalog is not specified")
+    );
     Ok(())
 }
 
@@ -618,9 +619,10 @@ async fn paimon_catalog_rest_missing_uri() -> Result<()> {
     let fixture = LiteTableContext::create().await?;
     let sql = "CREATE CATALOG p TYPE = PAIMON CONNECTION = (METASTORE='rest', WAREHOUSE='demo')";
     let err = plan_sql(&fixture, sql).await.unwrap_err();
-    assert!(err
-        .message()
-        .contains("uri for paimon rest catalog is not specified"));
+    assert!(
+        err.message()
+            .contains("uri for paimon rest catalog is not specified")
+    );
     Ok(())
 }
 
@@ -629,8 +631,9 @@ async fn paimon_catalog_invalid_metastore() -> Result<()> {
     let fixture = LiteTableContext::create().await?;
     let sql = "CREATE CATALOG p TYPE = PAIMON CONNECTION = (METASTORE='hive', WAREHOUSE='demo')";
     let err = plan_sql(&fixture, sql).await.unwrap_err();
-    assert!(err
-        .message()
-        .contains("paimon catalog metastore hive is not supported"));
+    assert!(
+        err.message()
+            .contains("paimon catalog metastore hive is not supported")
+    );
     Ok(())
 }
