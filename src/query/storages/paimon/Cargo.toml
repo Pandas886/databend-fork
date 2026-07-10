@@ -55,5 +55,9 @@ path = "tests/predicate.rs"
 name = "security"
 path = "tests/security.rs"
 
+[[test]]
+name = "system_tables"
+path = "tests/system_tables.rs"
+
 [lints]
 workspace = true

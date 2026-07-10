@@ -37,6 +37,8 @@ pub use source::table_load_count_for_test;
 pub use system::PaimonSystemTableKind;
 pub use system::ParsedName;
 pub use system::parse_system_name;
+#[doc(hidden)]
+pub use system::read_system_table;
 pub use table::PAIMON_ENGINE;
 pub use table::PaimonTable;
 pub use table::PaimonTableDescriptor;

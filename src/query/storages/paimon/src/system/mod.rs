@@ -25,7 +25,12 @@ use databend_common_expression::types::NumberDataType;
 use serde::Deserialize;
 use serde::Serialize;
 
+mod branches;
+mod options;
+mod schemas;
+mod snapshots;
 mod table;
+mod tags;
 
 pub use table::PaimonSystemTable;
 
@@ -273,9 +278,39 @@ pub async fn read_system_table(
     kind: PaimonSystemTableKind,
     _catalog: Arc<dyn paimon::Catalog>,
     _identifier: paimon::catalog::Identifier,
-    _table: paimon::Table,
+    table: paimon::Table,
 ) -> Result<DataBlock> {
-    Err(ErrorCode::Unimplemented(format!(
-        "Paimon system table {kind:?} is not implemented"
-    )))
+    match kind {
+        PaimonSystemTableKind::Branches => branches::read(&table).await,
+        PaimonSystemTableKind::Options => options::read(&table),
+        PaimonSystemTableKind::Schemas => schemas::read(&table).await,
+        PaimonSystemTableKind::Snapshots => snapshots::read(&table).await,
+        PaimonSystemTableKind::Tags => tags::read(&table).await,
+        _ => Err(ErrorCode::Unimplemented(format!(
+            "Paimon system table {kind:?} is not implemented"
+        ))),
+    }
+}
+
+fn millis_to_micros(millis: i64, field: &str) -> Result<i64> {
+    millis.checked_mul(1000).ok_or_else(|| {
+        ErrorCode::ReadTableDataError(format!(
+            "Paimon {field} timestamp overflows Databend timestamp: {millis}ms"
+        ))
+    })
+}
+
+fn unsigned_millis_to_micros(millis: u64, field: &str) -> Result<i64> {
+    let millis = i64::try_from(millis).map_err(|_| {
+        ErrorCode::ReadTableDataError(format!(
+            "Paimon {field} timestamp overflows Databend timestamp: {millis}ms"
+        ))
+    })?;
+    millis_to_micros(millis, field)
+}
+
+fn json<T: ?Sized + Serialize>(value: &T, field: &str) -> Result<String> {
+    serde_json::to_string(value).map_err(|err| {
+        ErrorCode::ReadTableDataError(format!("failed to serialize Paimon {field}: {err}"))
+    })
 }
