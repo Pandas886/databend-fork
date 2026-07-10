@@ -102,7 +102,7 @@ impl AsyncAccumulatingTransform for PaimonTableWriter {
 /// Reuses the same `build_target_arrow_schema` mapping as the read path
 /// (`paimon_schema_to_databend`), then casts column arrays to that schema
 /// (e.g. Databend `Utf8View` → Paimon `Utf8`).
-fn data_block_to_paimon_batch(
+pub fn data_block_to_paimon_batch(
     block: DataBlock,
     arrow_schema: &Arc<ArrowSchema>,
 ) -> Result<RecordBatch> {

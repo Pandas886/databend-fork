@@ -14,6 +14,6 @@
 
 mod fuse;
 mod null;
-mod paimon;
+pub(crate) mod paimon;
 mod statistics;
 mod system;
