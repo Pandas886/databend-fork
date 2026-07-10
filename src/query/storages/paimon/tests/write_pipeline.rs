@@ -128,7 +128,14 @@ async fn test_empty_write_does_not_create_snapshot() {
 }
 
 #[tokio::test]
-async fn test_failed_prepare_does_not_commit() {
+async fn test_unsunk_meta_does_not_commit() {
+    // Writer prepare can succeed and emit meta; without delivering it to the
+    // sink (pipeline abort / CALL_ON_FINISH_ON_ERROR=false), no snapshot is created.
+    assert!(
+        !PaimonCommitSink::CALL_ON_FINISH_ON_ERROR,
+        "abort after partial consume must not call on_finish/commit"
+    );
+
     let wh = TestWarehouse::new();
     let table = setup_empty_partitioned_pk_table(&wh.warehouse).await;
     let progress = Arc::new(Progress::create());
@@ -141,7 +148,7 @@ async fn test_failed_prepare_does_not_commit() {
         .unwrap();
     let meta_block = writer.on_finish(true).await.unwrap().expect("meta");
 
-    // Simulate a failed pipeline: meta was produced but never delivered to the sink.
+    // Meta produced but never sunk — mirrors pipeline abort skipping on_finish.
     let before = latest_snapshot_id(&table).await;
     assert!(before.is_none());
     assert!(read_all_rows(&table).await.unwrap().is_empty());
