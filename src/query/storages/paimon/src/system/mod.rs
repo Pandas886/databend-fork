@@ -280,8 +280,8 @@ fn size_fields(with_source: bool) -> Vec<TableField> {
 
 pub async fn read_system_table(
     kind: PaimonSystemTableKind,
-    _catalog: Arc<dyn paimon::Catalog>,
-    _identifier: paimon::catalog::Identifier,
+    catalog: Arc<dyn paimon::Catalog>,
+    identifier: paimon::catalog::Identifier,
     table: paimon::Table,
 ) -> Result<DataBlock> {
     match kind {
@@ -292,7 +292,7 @@ pub async fn read_system_table(
         PaimonSystemTableKind::Tags => tags::read(&table).await,
         PaimonSystemTableKind::Files => files::read(&table).await,
         PaimonSystemTableKind::Manifests => manifests::read(&table).await,
-        PaimonSystemTableKind::Partitions => partitions::read(&table).await,
+        PaimonSystemTableKind::Partitions => partitions::read(catalog, &identifier, &table).await,
         _ => Err(ErrorCode::Unimplemented(format!(
             "Paimon system table {kind:?} is not implemented"
         ))),
@@ -355,11 +355,37 @@ fn format_partition(
     let mut values = Vec::with_capacity(fields.len());
     for (pos, (_name, data_type)) in fields.iter().enumerate() {
         match crate::error::map_paimon_result(row.get_datum(pos, data_type))? {
-            Some(datum) => values.push(datum.to_string()),
+            Some(datum) => values.push(datum_plain(&datum)),
             None => values.push("null".to_string()),
         }
     }
     Ok(Some(format!("[{}]", values.join(", "))))
+}
+
+/// Renders a partition spec (key -> value string) as `[v0, v1]` in partition-key
+/// order, or `None` for unpartitioned tables. Used by the `partitions` table,
+/// whose values come from the catalog rather than a `BinaryRow`.
+fn format_partition_spec(
+    spec: &std::collections::HashMap<String, String>,
+    partition_keys: &[String],
+) -> Option<String> {
+    if partition_keys.is_empty() {
+        return None;
+    }
+    let values: Vec<String> = partition_keys
+        .iter()
+        .map(|key| spec.get(key).cloned().unwrap_or_else(|| "null".to_string()))
+        .collect();
+    Some(format!("[{}]", values.join(", ")))
+}
+
+/// Renders a `Datum` as plain text (unquoted strings), matching Paimon's cast
+/// semantics for the partition/key display columns.
+fn datum_plain(datum: &paimon::spec::Datum) -> String {
+    match datum {
+        paimon::spec::Datum::String(value) => value.clone(),
+        other => other.to_string(),
+    }
 }
 
 /// Stats columns as (name, type) in stats-encoding order. Type is `None` when a
@@ -455,7 +481,7 @@ fn decode_key(
     for (pos, (_name, data_type)) in columns.iter().enumerate() {
         let rendered = match data_type {
             Some(data_type) => match row.get_datum(pos, data_type).ok().flatten() {
-                Some(datum) => datum.to_string(),
+                Some(datum) => datum_plain(&datum),
                 None => "null".to_string(),
             },
             None => "null".to_string(),

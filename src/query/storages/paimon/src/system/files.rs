@@ -37,7 +37,9 @@ use crate::error::map_paimon_result;
 
 pub async fn read(table: &paimon::Table) -> Result<DataBlock> {
     let read_builder = table.new_read_builder();
-    let plan = map_paimon_result(read_builder.new_scan().plan().await)?;
+    // `with_scan_all_files` keeps every data file (including lower levels merged
+    // away by a normal read plan) so the files table lists the full file set.
+    let plan = map_paimon_result(read_builder.new_scan().with_scan_all_files().plan().await)?;
     let part_fields = partition_fields(table)?;
     let key_columns = trimmed_key_columns(table);
     let field_names: Vec<String> = table
