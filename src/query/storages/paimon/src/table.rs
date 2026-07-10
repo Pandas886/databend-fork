@@ -86,7 +86,7 @@ pub struct PaimonTable {
     table: OnceCell<paimon::Table>,
 }
 
-mod descriptor {
+pub(crate) mod descriptor {
     pub const PAIMON_TABLE_DESCRIPTOR_KEY: &str = "paimon.table_descriptor";
 }
 
@@ -271,7 +271,7 @@ fn table_info_from_plan(plan: &DataSourcePlan) -> Result<&TableInfo> {
     }
 }
 
-fn parse_descriptor(info: &TableInfo) -> Result<PaimonTableDescriptor> {
+pub(crate) fn parse_descriptor(info: &TableInfo) -> Result<PaimonTableDescriptor> {
     let raw = info
         .meta
         .engine_options
@@ -286,7 +286,7 @@ fn parse_descriptor(info: &TableInfo) -> Result<PaimonTableDescriptor> {
     })
 }
 
-fn options_from_map(options: &HashMap<String, String>) -> Result<Options> {
+pub(crate) fn options_from_map(options: &HashMap<String, String>) -> Result<Options> {
     let mut paimon_options = Options::new();
     for (key, value) in options {
         paimon_options.set(key, value.clone());
