@@ -26,7 +26,7 @@ pub async fn read(table: &paimon::Table) -> Result<DataBlock> {
     let mut summaries = map_paimon_result(
         collect_referenced_files_summary(
             table.file_io(),
-            &table.location().to_string(),
+            table.location(),
             schema.partition_keys(),
             schema.fields(),
         )
