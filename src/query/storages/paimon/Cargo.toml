@@ -35,13 +35,6 @@ typetag = { workspace = true }
 storage-hdfs = ["paimon/storage-hdfs"]
 
 [dev-dependencies]
-arrow-array = { workspace = true }
-arrow-schema = { workspace = true }
-chrono = { workspace = true }
-databend-common-catalog = { workspace = true }
-databend-common-meta-app = { workspace = true }
-databend-common-sql = { workspace = true }
-databend-query = { workspace = true }
 pretty_assertions = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
@@ -59,8 +52,8 @@ name = "predicate"
 path = "tests/predicate.rs"
 
 [[test]]
-name = "read"
-path = "tests/read.rs"
+name = "security"
+path = "tests/security.rs"
 
 [lints]
 workspace = true

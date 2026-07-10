@@ -195,6 +195,7 @@ jwt-simple = { workspace = true }
 maplit = { workspace = true }
 mysql_async = { workspace = true }
 p256 = { workspace = true }
+paimon = { workspace = true }
 pretty_assertions = { workspace = true }
 proptest = { workspace = true }
 reqwest = { workspace = true }

@@ -12,8 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod fuse;
-mod null;
-mod paimon;
-mod statistics;
-mod system;
+mod common;
+mod pipeline;
+mod read;

@@ -15,6 +15,7 @@
 use std::any::Any;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::fmt;
 use std::sync::Arc;
 
 use databend_common_catalog::catalog::StorageDescription;
@@ -33,6 +34,7 @@ use databend_common_exception::ErrorCode;
 use databend_common_exception::Result;
 use databend_common_expression::TableSchema;
 use databend_common_meta_app::schema::CatalogInfo;
+use databend_common_meta_app::schema::CatalogOption;
 use databend_common_meta_app::schema::TableIdent;
 use databend_common_meta_app::schema::TableInfo;
 use databend_common_meta_app::schema::TableMeta;
@@ -50,22 +52,37 @@ use crate::SerializableDataSplit;
 use crate::error::map_paimon_error;
 use crate::error::map_paimon_result;
 use crate::predicate::apply_pushdowns;
+use crate::predicate::can_push_limit;
 use crate::source::PaimonTableSource;
 use crate::table::descriptor::PAIMON_TABLE_DESCRIPTOR_KEY;
 
 pub const PAIMON_ENGINE: &str = "PAIMON";
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+/// Serializable table descriptor distributed with read plans.
+///
+/// Catalog credentials are taken from [`TableInfo::catalog_info`] at runtime and are
+/// intentionally excluded from this struct (and from persisted `engine_options`).
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PaimonTableDescriptor {
-    pub catalog_options: HashMap<String, String>,
     pub identifier: Identifier,
     pub location: String,
     pub schema: PaimonTableSchema,
 }
 
+impl fmt::Debug for PaimonTableDescriptor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PaimonTableDescriptor")
+            .field("identifier", &self.identifier)
+            .field("location", &self.location)
+            .field("schema_fields", &self.schema.fields().len())
+            .finish()
+    }
+}
+
 pub struct PaimonTable {
     info: TableInfo,
     descriptor: PaimonTableDescriptor,
+    catalog_options: HashMap<String, String>,
     table: OnceCell<paimon::Table>,
 }
 
@@ -76,9 +93,11 @@ mod descriptor {
 impl PaimonTable {
     pub fn try_create(info: TableInfo) -> Result<Box<dyn Table>> {
         let descriptor = parse_descriptor(&info)?;
+        let catalog_options = catalog_options_from_info(&info)?;
         Ok(Box::new(Self {
             info,
             descriptor,
+            catalog_options,
             table: OnceCell::new(),
         }))
     }
@@ -97,7 +116,6 @@ impl PaimonTable {
         table: paimon::Table,
     ) -> Result<Arc<dyn Table>> {
         let descriptor = PaimonTableDescriptor {
-            catalog_options,
             identifier: table.identifier().clone(),
             location: table.location().to_string(),
             schema: table.schema().clone(),
@@ -129,23 +147,36 @@ impl PaimonTable {
         Ok(Arc::new(Self {
             info,
             descriptor,
+            catalog_options,
             table: OnceCell::new(),
         }))
+    }
+
+    pub fn engine_options_json(&self) -> Result<String> {
+        let raw = self
+            .info
+            .meta
+            .engine_options
+            .get(PAIMON_TABLE_DESCRIPTOR_KEY)
+            .ok_or_else(|| {
+                ErrorCode::Internal("missing paimon table descriptor in engine options".to_string())
+            })?;
+        Ok(raw.clone())
     }
 
     async fn loaded_table(&self) -> Result<&paimon::Table> {
         self.table
             .get_or_try_init(|| async {
-                let options = options_from_map(&self.descriptor.catalog_options)?;
+                let options = options_from_map(&self.catalog_options)?;
                 let catalog = map_paimon_result(CatalogFactory::create(options).await)?;
                 let loaded =
                     map_paimon_result(catalog.get_table(&self.descriptor.identifier).await)?;
                 Ok(paimon::Table::new(
                     loaded.file_io().clone(),
-                    self.descriptor.identifier.clone(),
-                    self.descriptor.location.clone(),
-                    self.descriptor.schema.clone(),
-                    None,
+                    loaded.identifier().clone(),
+                    loaded.location().to_string(),
+                    loaded.schema().clone(),
+                    loaded.rest_env().cloned(),
                 ))
             })
             .await
@@ -157,7 +188,7 @@ impl PaimonTable {
         push_downs: Option<PushDownInfo>,
     ) -> Result<(PartStatistics, Partitions)> {
         let table = self.loaded_table().await?;
-        let (read_builder, _analysis) =
+        let (read_builder, analysis) =
             apply_pushdowns(table, push_downs.as_ref(), self.schema().as_ref());
         let plan = map_paimon_result(read_builder.new_scan().plan().await)?;
         let mut read_rows = 0usize;
@@ -180,17 +211,18 @@ impl PaimonTable {
                 part
             })
             .collect();
+        if can_push_limit(
+            push_downs.as_ref().and_then(|push_downs| push_downs.limit),
+            &analysis,
+            &read_builder,
+        ) && let Some(limit) = push_downs.as_ref().and_then(|push_downs| push_downs.limit)
+        {
+            read_rows = read_rows.min(limit);
+        }
         Ok((
             PartStatistics::new_exact(read_rows, read_bytes, parts.len(), parts.len()),
             Partitions::create(PartitionsShuffleKind::Mod, parts),
         ))
-    }
-
-    pub async fn plan_partitions_for_test(
-        &self,
-        push_downs: Option<PushDownInfo>,
-    ) -> Result<(PartStatistics, Partitions)> {
-        self.do_read_partitions(push_downs).await
     }
 
     pub fn do_read_data(
@@ -211,27 +243,32 @@ impl PaimonTable {
     }
 }
 
+pub(crate) fn catalog_options_from_info(info: &TableInfo) -> Result<HashMap<String, String>> {
+    match &info.catalog_info.meta.catalog_option {
+        CatalogOption::Paimon(option) => Ok(option.options.clone()),
+        other => Err(ErrorCode::Internal(format!(
+            "expected paimon catalog options, got {:?}",
+            other.catalog_type()
+        ))),
+    }
+}
+
+pub(crate) fn catalog_options_from_plan(plan: &DataSourcePlan) -> Result<HashMap<String, String>> {
+    let table_info = table_info_from_plan(plan)?;
+    catalog_options_from_info(table_info)
+}
+
 pub(crate) fn parse_descriptor_from_plan(plan: &DataSourcePlan) -> Result<PaimonTableDescriptor> {
-    let table_info = match &plan.source_info {
-        DataSourceInfo::TableSource(table_info) => table_info,
-        _ => {
-            return Err(ErrorCode::Internal(
-                "paimon read plan must use table source".to_string(),
-            ));
-        }
-    };
-    let raw = table_info
-        .meta
-        .engine_options
-        .get(PAIMON_TABLE_DESCRIPTOR_KEY)
-        .ok_or_else(|| {
-            ErrorCode::Internal("missing paimon table descriptor in engine options".to_string())
-        })?;
-    serde_json::from_str(raw).map_err(|err| {
-        ErrorCode::Internal(format!(
-            "deserialize paimon table descriptor failed: {err:?}"
-        ))
-    })
+    parse_descriptor(table_info_from_plan(plan)?)
+}
+
+fn table_info_from_plan(plan: &DataSourcePlan) -> Result<&TableInfo> {
+    match &plan.source_info {
+        DataSourceInfo::TableSource(table_info) => Ok(table_info),
+        _ => Err(ErrorCode::Internal(
+            "paimon read plan must use table source".to_string(),
+        )),
+    }
 }
 
 fn parse_descriptor(info: &TableInfo) -> Result<PaimonTableDescriptor> {

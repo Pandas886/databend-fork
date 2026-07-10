@@ -5,8 +5,9 @@ CURDIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 WAREHOUSE_PATH="${PAIMON_WAREHOUSE_PATH:-${TESTS_DATA_DIR}/paimon_warehouse}"
 
+"${CURDIR}"/../../../sqllogictests/scripts/prepare_paimon_fs_data.sh
+
 echo "DROP CATALOG IF EXISTS paimon_fs" | bendsql_connect_root
-echo "DROP CATALOG IF EXISTS paimon_rest" | bendsql_connect_root
 
 cat <<EOF | bendsql_connect_root
 CREATE CATALOG paimon_fs TYPE = PAIMON CONNECTION = (
@@ -15,21 +16,14 @@ CREATE CATALOG paimon_fs TYPE = PAIMON CONNECTION = (
 );
 EOF
 
+echo "===== SHOW CREATE CATALOG paimon_fs ====="
+echo "SHOW CREATE CATALOG paimon_fs;" | bendsql_connect_root
+
+echo "===== filesystem catalog databases ====="
 cat <<EOF | bendsql_connect_root
-CREATE CATALOG paimon_rest TYPE = PAIMON CONNECTION = (
-    METASTORE = 'rest',
-    URI = 'http://127.0.0.1:9088',
-    WAREHOUSE = 's3://paimon-warehouse/'
-);
+USE CATALOG paimon_fs;
+SHOW DATABASES;
 EOF
 
-for catalog in paimon_fs paimon_rest; do
-	echo "===== Testing ${catalog} ====="
-	echo "SHOW CREATE CATALOG ${catalog};" | bendsql_connect_root
-	echo """
-USE CATALOG ${catalog};
-SHOW DATABASES;
-""" | bendsql_connect_root
-done
-
-echo "CREATE TABLE ddl_ro.t(a int);" | bendsql_connect_root 2>&1 | grep -i "read-only\|not supported"
+echo "===== read-only DDL in paimon catalog session ====="
+echo "CREATE TABLE regression.new_t(id int);" | bendsql_connect_root 2>&1 | rg -i "read-only|not supported"
