@@ -45,7 +45,7 @@ use databend_common_pipeline::core::Pipeline;
 use databend_common_pipeline_transforms::TransformPipelineHelper;
 use databend_storages_common_table_meta::meta::SnapshotId;
 use databend_storages_common_table_meta::meta::TableMetaTimestamps;
-use paimon::FileSystemCatalog;
+use paimon::CatalogFactory;
 use paimon::Options;
 use paimon::catalog::Identifier;
 use paimon::spec::CoreOptions;
@@ -236,28 +236,21 @@ impl PaimonTable {
     }
 
     fn open_paimon_table(&self) -> Result<paimon::Table> {
+        // Always open through CatalogFactory so REST catalogs keep rest_env
+        // (needed when workers rebuild the table from TableInfo alone).
         let options = options_from_map(&self.catalog_options)?;
-        let metastore = self
-            .catalog_options
-            .get("metastore")
-            .map(|s| s.as_str())
-            .unwrap_or("filesystem");
-        let file_io = if metastore == "filesystem" {
-            let catalog = FileSystemCatalog::new(options).map_err(map_paimon_error)?;
-            catalog.file_io().clone()
-        } else {
-            paimon::io::FileIO::from_path(&self.descriptor.location)
-                .map_err(map_paimon_error)?
-                .with_props(options.to_map().iter())
-                .build()
-                .map_err(map_paimon_error)?
-        };
+        let catalog = map_paimon_result(databend_common_base::runtime::block_on(
+            CatalogFactory::create(options),
+        ))?;
+        let loaded = map_paimon_result(databend_common_base::runtime::block_on(
+            catalog.get_table(&self.descriptor.identifier),
+        ))?;
         Ok(paimon::Table::new(
-            file_io,
-            self.descriptor.identifier.clone(),
-            self.descriptor.location.clone(),
-            self.descriptor.schema.clone(),
-            None,
+            loaded.file_io().clone(),
+            loaded.identifier().clone(),
+            loaded.location().to_string(),
+            loaded.schema().clone(),
+            loaded.rest_env().cloned(),
         ))
     }
 
