@@ -32,6 +32,7 @@ members = [
     "src/meta/ver",
     "src/query/codegen",
     "src/tests/planner_replay",
+    "src/query/storages/paimon",
     "tests/sqllogictests",
 ]
 default-members = [
