@@ -24,6 +24,10 @@ spark = (
         "spark.jars.packages",
         "org.apache.paimon:paimon-spark-3.5_2.12:1.4.1",
     )
+    .config(
+        "spark.sql.extensions",
+        "org.apache.paimon.spark.extensions.PaimonSparkSessionExtensions",
+    )
     .config("spark.sql.catalog.paimon", "org.apache.paimon.spark.SparkCatalog")
     .config("spark.sql.catalog.paimon.warehouse", f"file://{warehouse}")
     .config("spark.sql.shuffle.partitions", "4")
@@ -49,7 +53,7 @@ for part, name in [(0, "a0"), (1, "a1"), (2, "b0"), (3, "b1")]:
     spark.sql(
         f"""
 INSERT INTO paimon.regression.append_t PARTITION (part = {part})
-SELECT {part}, {part}, '{name}'
+SELECT {part}, '{name}'
 """
     )
 
@@ -58,10 +62,9 @@ spark.sql(
     """
 CREATE TABLE paimon.regression.pk_t (
   id INT,
-  name STRING,
-  PRIMARY KEY (id) NOT ENFORCED
+  name STRING
 ) USING paimon
-TBLPROPERTIES ('bucket' = '1')
+TBLPROPERTIES ('primary-key' = 'id', 'bucket' = '1')
 """
 )
 spark.sql("INSERT INTO paimon.regression.pk_t VALUES (1, 'old')")
