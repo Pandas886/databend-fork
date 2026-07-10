@@ -12,124 +12,47 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![allow(dead_code)]
-
 use std::sync::Arc;
 
 use databend_common_catalog::plan::Filters;
 use databend_common_catalog::plan::Projection;
 use databend_common_catalog::plan::PushDownInfo;
 use databend_common_catalog::table::Table;
+use databend_common_catalog::table_context::TableContext;
+use databend_common_exception::ErrorCode;
 use databend_common_exception::Result;
 use databend_common_expression::DataBlock;
 use databend_common_expression::FunctionID;
 use databend_common_expression::RemoteExpr as Expr;
 use databend_common_expression::Scalar;
 use databend_common_expression::types::DataType;
-use databend_common_expression::types::NumberScalar;
 use databend_common_sql::executor::table_read_plan::ToReadDataSourcePlan;
 use databend_query::pipelines::executor::ExecutorSettings;
 use databend_query::pipelines::executor::PipelinePullingExecutor;
-use databend_query::test_kits::TestFixture;
+use databend_query::sessions::QueryContext;
 
-pub fn pushdown_eq_id(value: i32) -> PushDownInfo {
-    let filter = Expr::FunctionCall {
-        span: None,
-        id: Box::new(FunctionID::Builtin {
-            name: "eq".to_string(),
-            id: 0,
-        }),
-        generics: vec![],
-        args: vec![
-            Expr::ColumnRef {
-                span: None,
-                id: "id".to_string(),
-                data_type: DataType::Number(
-                    databend_common_expression::types::NumberDataType::Int32,
-                ),
-                display_name: "id".to_string(),
-            },
-            Expr::Constant {
-                span: None,
-                scalar: Scalar::Number(NumberScalar::Int32(value)),
-                data_type: DataType::Number(
-                    databend_common_expression::types::NumberDataType::Int32,
-                ),
-            },
-        ],
-        return_type: DataType::Boolean,
-    };
-    PushDownInfo {
-        filters: Some(Filters {
-            filter,
-            inverted_filter: Expr::Constant {
-                span: None,
-                scalar: Scalar::Boolean(false),
-                data_type: DataType::Boolean,
-            },
-        }),
-        is_deterministic: true,
-        ..Default::default()
+use super::common::paimon_it_lock;
+use super::common::shared_fixture;
+
+async fn query_ctx(ctx: Option<Arc<dyn TableContext>>) -> Result<Arc<dyn TableContext>> {
+    match ctx {
+        Some(ctx) => Ok(ctx),
+        None => {
+            let ctx: Arc<dyn TableContext> = shared_fixture().await?.new_query_ctx().await?;
+            Ok(ctx)
+        }
     }
 }
 
-pub fn pushdown_with_limit(limit: usize, residual: bool) -> PushDownInfo {
-    let mut pushdown = if residual {
-        let mut info = pushdown_eq_id(1);
-        let not_filter = Expr::FunctionCall {
-            span: None,
-            id: Box::new(FunctionID::Builtin {
-                name: "not".to_string(),
-                id: 0,
-            }),
-            generics: vec![],
-            args: vec![Expr::FunctionCall {
-                span: None,
-                id: Box::new(FunctionID::Builtin {
-                    name: "eq".to_string(),
-                    id: 0,
-                }),
-                generics: vec![],
-                args: vec![
-                    Expr::ColumnRef {
-                        span: None,
-                        id: "name".to_string(),
-                        data_type: DataType::String,
-                        display_name: "name".to_string(),
-                    },
-                    Expr::Constant {
-                        span: None,
-                        scalar: Scalar::String("x".to_string()),
-                        data_type: DataType::String,
-                    },
-                ],
-                return_type: DataType::Boolean,
-            }],
-            return_type: DataType::Boolean,
-        };
-        info.filters = Some(Filters {
-            filter: Expr::FunctionCall {
-                span: None,
-                id: Box::new(FunctionID::Builtin {
-                    name: "and".to_string(),
-                    id: 0,
-                }),
-                generics: vec![],
-                args: vec![info.filters.unwrap().filter, not_filter],
-                return_type: DataType::Boolean,
-            },
-            inverted_filter: Expr::Constant {
-                span: None,
-                scalar: Scalar::Boolean(false),
-                data_type: DataType::Boolean,
-            },
-        });
-        info
-    } else {
-        pushdown_eq_id(1)
-    };
-    pushdown.limit = Some(limit);
-    pushdown
+fn set_max_threads(ctx: &Arc<dyn TableContext>, threads: usize) -> Result<()> {
+    let query_ctx = ctx
+        .as_any()
+        .downcast_ref::<QueryContext>()
+        .ok_or_else(|| ErrorCode::Internal("expected query context in paimon tests".to_string()))?;
+    query_ctx
+        .get_current_session()
+        .get_settings()
+        .set_max_threads(threads as u64)
 }
 
 pub fn projection_indices(indices: Vec<usize>) -> PushDownInfo {
@@ -200,8 +123,31 @@ pub async fn read_blocks_via_pipeline(
     table: Arc<dyn Table>,
     push_downs: Option<PushDownInfo>,
 ) -> Result<Vec<DataBlock>> {
-    let fixture = TestFixture::setup().await?;
-    let ctx = fixture.new_query_ctx().await?;
+    read_blocks_via_pipeline_with_threads(table, push_downs, None).await
+}
+
+pub async fn read_blocks_via_pipeline_with_threads(
+    table: Arc<dyn Table>,
+    push_downs: Option<PushDownInfo>,
+    max_threads: Option<usize>,
+) -> Result<Vec<DataBlock>> {
+    read_blocks_via_pipeline_with_ctx(table, push_downs, max_threads, None).await
+}
+
+// paimon_it_lock 故意在整个 pipeline 执行期间（含 pull_data().await）持有，
+// 用于串行化各测试对共享全局执行运行时的使用；此处持锁跨 await 是有意为之。
+#[allow(clippy::await_holding_lock)]
+pub async fn read_blocks_via_pipeline_with_ctx(
+    table: Arc<dyn Table>,
+    push_downs: Option<PushDownInfo>,
+    max_threads: Option<usize>,
+    ctx: Option<Arc<dyn TableContext>>,
+) -> Result<Vec<DataBlock>> {
+    let ctx = query_ctx(ctx).await?;
+    let _guard = paimon_it_lock();
+    if let Some(threads) = max_threads {
+        set_max_threads(&ctx, threads)?;
+    }
     let plan = table
         .read_plan(ctx.clone(), push_downs, None, false, false)
         .await?;

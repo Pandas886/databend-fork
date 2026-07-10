@@ -15,27 +15,20 @@
 mod common;
 
 use common::TestWarehouse;
-use common::filesystem_catalog;
+use common::scan_splits;
 use common::setup_append_table;
+use common::setup_pk_table;
 use databend_common_catalog::plan::PartInfo;
 use databend_common_storages_paimon::PaimonPartInfo;
 use databend_common_storages_paimon::SerializableDataSplit;
-use paimon::Catalog;
 use pretty_assertions::assert_eq;
 
 #[tokio::test]
-async fn test_serializable_split_round_trip_from_scan() {
+async fn test_serializable_split_round_trip_from_append_scan() {
     let wh = TestWarehouse::new();
     let identifier = setup_append_table(&wh.warehouse).await;
-    let catalog = filesystem_catalog(&wh.warehouse);
-    let table = catalog.get_table(&identifier).await.expect("get table");
-    let plan = table
-        .new_read_builder()
-        .new_scan()
-        .plan()
-        .await
-        .expect("scan plan");
-    let split = plan.splits().first().expect("split");
+    let splits = scan_splits(&wh.warehouse, &identifier).await;
+    let split = splits.first().expect("split");
     assert!(!split.data_files().is_empty());
 
     let wire = SerializableDataSplit::from(split);
@@ -46,12 +39,51 @@ async fn test_serializable_split_round_trip_from_scan() {
     assert_eq!(wire.bucket, split.bucket());
     assert_eq!(wire.bucket_path, split.bucket_path());
     assert_eq!(wire.total_buckets, split.total_buckets());
-    assert_eq!(wire.data_files.len(), split.data_files().len());
+    assert_eq!(wire.data_files, split.data_files());
+    assert_eq!(
+        wire.deletion_files,
+        split.data_deletion_files().map(|v| v.to_vec())
+    );
+    assert_eq!(wire.row_ranges, split.row_ranges().map(|v| v.to_vec()));
     assert_eq!(restored.data_files().len(), split.data_files().len());
 }
 
+#[tokio::test]
+async fn test_pk_split_wire_round_trip_preserves_all_fields() {
+    let wh = TestWarehouse::new();
+    let identifier = setup_pk_table(&wh.warehouse).await;
+    let splits = scan_splits(&wh.warehouse, &identifier).await;
+    let split = splits.first().expect("pk split");
+    assert!(!split.data_files().is_empty());
+
+    let wire = SerializableDataSplit::from(split);
+    let restored: paimon::DataSplit = wire.clone().try_into().expect("restore pk split");
+
+    assert_eq!(wire.snapshot_id, split.snapshot_id());
+    assert_eq!(wire.partition, *split.partition());
+    assert_eq!(wire.bucket, split.bucket());
+    assert_eq!(wire.bucket_path, split.bucket_path());
+    assert_eq!(wire.total_buckets, split.total_buckets());
+    assert_eq!(wire.data_files.len(), split.data_files().len());
+    for (left, right) in wire.data_files.iter().zip(split.data_files()) {
+        assert_eq!(left, right);
+    }
+    assert_eq!(
+        wire.deletion_files,
+        split.data_deletion_files().map(|files| files.to_vec())
+    );
+    assert_eq!(
+        wire.row_ranges,
+        split.row_ranges().map(|ranges| ranges.to_vec())
+    );
+    assert_eq!(restored.snapshot_id(), split.snapshot_id());
+    assert_eq!(restored.bucket(), split.bucket());
+    assert_eq!(restored.bucket_path(), split.bucket_path());
+    assert_eq!(restored.total_buckets(), split.total_buckets());
+}
+
 #[test]
-fn test_part_info_typetag_round_trip() {
+fn test_part_info_typetag_round_trip_with_optional_fields() {
     let wire = SerializableDataSplit {
         snapshot_id: 7,
         partition: paimon::spec::BinaryRow::new(0),
@@ -59,8 +91,8 @@ fn test_part_info_typetag_round_trip() {
         bucket_path: "db/table/bucket-3".to_string(),
         total_buckets: 8,
         data_files: vec![],
-        deletion_files: None,
-        row_ranges: None,
+        deletion_files: Some(vec![None]),
+        row_ranges: Some(vec![paimon::RowRange::new(0, 10)]),
     };
     let part = PaimonPartInfo { split: wire };
     let json = serde_json::to_string(&part).expect("serialize");

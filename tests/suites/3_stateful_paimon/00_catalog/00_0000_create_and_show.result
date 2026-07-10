@@ -2,7 +2,4 @@ paimon_fs	paimon	METASTORE
 filesystem
 WAREHOUSE
 ${TESTS_DATA_DIR}/paimon_warehouse
-paimon_rest	paimon	URI
-http://127.0.0.1:9088
-WAREHOUSE
-s3://paimon-warehouse/
+regression

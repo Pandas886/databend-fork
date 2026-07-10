@@ -1,1 +1,3 @@
 true
+partitions=4
+distinct_paimon_nodes=2

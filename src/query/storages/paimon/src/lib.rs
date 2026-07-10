@@ -29,6 +29,10 @@ pub use predicate::analyze_predicate;
 pub use predicate::apply_pushdowns;
 pub use predicate::can_push_limit;
 pub use predicate::projection_column_names;
+#[doc(hidden)]
+pub use source::reset_table_load_count_for_test;
+#[doc(hidden)]
+pub use source::table_load_count_for_test;
 pub use table::PAIMON_ENGINE;
 pub use table::PaimonTable;
 pub use table::PaimonTableDescriptor;

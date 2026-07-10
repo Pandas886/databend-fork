@@ -12,10 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::LazyLock;
+use std::sync::Mutex;
+use std::sync::MutexGuard;
 
 use arrow_array::Int32Array;
 use arrow_array::RecordBatch;
@@ -24,7 +25,6 @@ use arrow_schema::DataType as ArrowDataType;
 use arrow_schema::Field as ArrowField;
 use arrow_schema::Schema as ArrowSchema;
 use chrono::Utc;
-use databend_common_catalog::table::Table;
 use databend_common_meta_app::schema::CatalogInfo;
 use databend_common_meta_app::schema::CatalogMeta;
 use databend_common_meta_app::schema::CatalogOption;
@@ -32,10 +32,8 @@ use databend_common_meta_app::schema::PaimonCatalogOption;
 use databend_common_meta_app::schema::catalog_id_ident::CatalogId;
 use databend_common_meta_app::schema::catalog_name_ident::CatalogNameIdent;
 use databend_common_meta_app::tenant::Tenant;
-use databend_common_storages_paimon::PaimonCatalog;
-use databend_common_storages_paimon::PaimonPartInfo;
 use databend_common_storages_paimon::PaimonTable;
-use futures::StreamExt;
+use databend_query::test_kits::TestFixture;
 use paimon::Catalog;
 use paimon::CatalogOptions;
 use paimon::FileSystemCatalog;
@@ -46,6 +44,43 @@ use paimon::spec::IntType;
 use paimon::spec::Schema;
 use paimon::spec::VarCharType;
 use tempfile::TempDir;
+
+static PAIMON_IT_LOCK: Mutex<()> = Mutex::new(());
+
+pub fn paimon_it_lock() -> MutexGuard<'static, ()> {
+    PAIMON_IT_LOCK.lock().unwrap_or_else(|err| err.into_inner())
+}
+
+// 每个测试运行在各自的线程上，而 GlobalInstance 在单测模式下按线程名注册，
+// 因此 fixture 必须按线程名各自持有：同一测试内复用，跨测试互不影响，
+// 保证每个测试都在自己的线程名下完成 TestFixture::setup 的 GlobalInstance 注册。
+static SHARED_TEST_FIXTURES: LazyLock<Mutex<HashMap<String, Arc<TestFixture>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+pub async fn shared_fixture() -> databend_common_exception::Result<Arc<TestFixture>> {
+    let thread_name = std::thread::current()
+        .name()
+        .unwrap_or("paimon_it")
+        .to_string();
+    if let Some(fixture) = SHARED_TEST_FIXTURES
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .get(&thread_name)
+    {
+        return Ok(fixture.clone());
+    }
+    let fixture = Arc::new(TestFixture::setup().await?);
+    Ok(SHARED_TEST_FIXTURES
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .entry(thread_name)
+        .or_insert(fixture)
+        .clone())
+}
+
+pub async fn setup_paimon_fixture() -> databend_common_exception::Result<Arc<TestFixture>> {
+    shared_fixture().await
+}
 
 pub struct TestWarehouse {
     pub _dir: TempDir,
@@ -72,25 +107,6 @@ pub fn catalog_info(warehouse: &str) -> Arc<CatalogInfo> {
                 options: HashMap::from([
                     ("metastore".to_string(), "filesystem".to_string()),
                     ("warehouse".to_string(), warehouse.to_string()),
-                ]),
-            }),
-            created_on: Utc::now(),
-        },
-    ))
-}
-
-pub fn catalog_info_with_secret(warehouse: &str, secret: &str) -> Arc<CatalogInfo> {
-    Arc::new(CatalogInfo::new(
-        CatalogNameIdent::new(Tenant::new_literal("test"), "paimon_secret"),
-        CatalogId::new(2),
-        CatalogMeta {
-            catalog_option: CatalogOption::Paimon(PaimonCatalogOption {
-                options: HashMap::from([
-                    ("metastore".to_string(), "filesystem".to_string()),
-                    ("warehouse".to_string(), warehouse.to_string()),
-                    ("token".to_string(), secret.to_string()),
-                    ("password".to_string(), secret.to_string()),
-                    ("s3.secret-access-key".to_string(), secret.to_string()),
                 ]),
             }),
             created_on: Utc::now(),
@@ -231,84 +247,46 @@ async fn write_partitioned_batch(
         .expect("commit");
 }
 
-pub async fn databend_table(warehouse: &str, identifier: &Identifier) -> Arc<dyn Table> {
-    databend_table_with_catalog(warehouse, catalog_info(warehouse), identifier).await
-}
-
-pub async fn databend_table_with_catalog(
+pub async fn databend_table(
     warehouse: &str,
-    catalog_info: Arc<CatalogInfo>,
     identifier: &Identifier,
-) -> Arc<dyn Table> {
+) -> Arc<dyn databend_common_catalog::table::Table> {
     let catalog = filesystem_catalog(warehouse);
     let paimon_table = catalog
         .get_table(identifier)
         .await
         .expect("get paimon table");
-    let options = match &catalog_info.meta.catalog_option {
-        CatalogOption::Paimon(option) => option.options.clone(),
-        _ => panic!("expected paimon catalog"),
-    };
-    PaimonTable::from_paimon_table(catalog_info, options, paimon_table).expect("databend table")
+    PaimonTable::from_paimon_table(
+        catalog_info(warehouse),
+        HashMap::from([
+            ("metastore".to_string(), "filesystem".to_string()),
+            ("warehouse".to_string(), warehouse.to_string()),
+        ]),
+        paimon_table,
+    )
+    .expect("databend table")
 }
 
-pub async fn read_rows_via_paimon(warehouse: &str, identifier: &Identifier) -> Vec<(i32, String)> {
-    let catalog = filesystem_catalog(warehouse);
-    let table = catalog.get_table(identifier).await.expect("get table");
-    let read_builder = table.new_read_builder();
-    let plan = read_builder.new_scan().plan().await.expect("scan plan");
-    let table_read = read_builder.new_read().expect("table read");
-    let mut rows = Vec::new();
-    for split in plan.splits() {
-        let mut stream = table_read
-            .to_arrow(std::slice::from_ref(split))
-            .expect("arrow stream");
-        while let Some(batch) = stream.next().await {
-            let batch = batch.expect("batch");
-            let ids = batch
-                .column(1)
-                .as_any()
-                .downcast_ref::<Int32Array>()
-                .or_else(|| batch.column(0).as_any().downcast_ref::<Int32Array>())
-                .expect("id column");
-            let name_idx = if batch.num_columns() == 3 { 2 } else { 1 };
-            let names = batch
-                .column(name_idx)
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .expect("name column");
-            for i in 0..batch.num_rows() {
-                rows.push((ids.value(i), names.value(i).to_string()));
-            }
-        }
-    }
-    rows
-}
-
-pub async fn paimon_catalog(warehouse: &str) -> PaimonCatalog {
-    let info = catalog_info(warehouse);
-    databend_common_base::runtime::spawn_blocking(move || PaimonCatalog::try_create(info))
-        .await
-        .expect("join catalog task")
-        .expect("paimon catalog")
-}
-
-pub fn part_infos(parts: &databend_common_catalog::plan::Partitions) -> Vec<&PaimonPartInfo> {
+pub fn part_infos(
+    parts: &databend_common_catalog::plan::Partitions,
+) -> Vec<&databend_common_storages_paimon::PaimonPartInfo> {
     parts
         .partitions
         .iter()
         .map(|part| {
             part.as_any()
-                .downcast_ref::<PaimonPartInfo>()
+                .downcast_ref::<databend_common_storages_paimon::PaimonPartInfo>()
                 .expect("paimon part")
         })
         .collect()
 }
 
-pub async fn scan_splits(warehouse: &str, identifier: &Identifier) -> Vec<paimon::DataSplit> {
-    let catalog = filesystem_catalog(warehouse);
-    let table = catalog.get_table(identifier).await.expect("get table");
-    let read_builder = table.new_read_builder();
-    let plan = read_builder.new_scan().plan().await.expect("scan plan");
-    plan.splits().to_vec()
+pub fn create_paimon_catalog_sql(warehouse: &str) -> String {
+    format!(
+        "CREATE CATALOG paimon_it TYPE = PAIMON CONNECTION = (METASTORE = 'filesystem', WAREHOUSE = '{warehouse}')"
+    )
+}
+
+pub fn drop_paimon_catalog_sql() -> &'static str {
+    "DROP CATALOG IF EXISTS paimon_it"
 }
