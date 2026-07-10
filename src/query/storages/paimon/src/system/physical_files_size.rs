@@ -22,7 +22,7 @@ use crate::error::map_paimon_result;
 
 pub async fn read(table: &paimon::Table) -> Result<DataBlock> {
     let summary = map_paimon_result(
-        collect_physical_files_summary(table.file_io(), &table.location().to_string()).await,
+        collect_physical_files_summary(table.file_io(), table.location()).await,
     )?;
     Ok(DataBlock::new_from_columns(vec![
         Int64Type::from_data(vec![summary.manifest_file_count]),
