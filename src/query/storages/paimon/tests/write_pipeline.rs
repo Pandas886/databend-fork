@@ -26,11 +26,23 @@ use chrono::DateTime;
 use chrono::Utc;
 use common::TestWarehouse;
 use common::filesystem_catalog;
+use databend_common_base::base::Progress;
+use databend_common_expression::DataBlock;
+use databend_common_expression::DataField;
+use databend_common_expression::DataSchema;
+use databend_common_expression::types::DataType;
+use databend_common_expression::types::NumberDataType;
+use databend_common_pipeline::sinks::AsyncSink;
+use databend_common_pipeline_transforms::AsyncAccumulatingTransform;
 use databend_common_storages_paimon::PaimonCommitMeta;
+use databend_common_storages_paimon::PaimonCommitSink;
+use databend_common_storages_paimon::PaimonTableWriter;
+use futures::StreamExt;
 use paimon::Catalog;
+use paimon::SnapshotManager;
 use paimon::catalog::Identifier;
 use paimon::spec::DataFileMeta;
-use paimon::spec::DataType;
+use paimon::spec::DataType as PaimonDataType;
 use paimon::spec::IndexFileMeta;
 use paimon::spec::IntType;
 use paimon::spec::Schema;
@@ -51,6 +63,95 @@ fn test_commit_meta_round_trip() {
     assert_eq!(restored[0].new_index_files, message.new_index_files);
 }
 
+#[tokio::test]
+async fn test_parallel_writers_commit_one_snapshot() {
+    let wh = TestWarehouse::new();
+    let table = setup_empty_partitioned_pk_table(&wh.warehouse).await;
+    let progress = Arc::new(Progress::create());
+
+    let mut writer0 =
+        PaimonTableWriter::try_create_with_progress(progress.clone(), table.clone()).unwrap();
+    let mut writer1 =
+        PaimonTableWriter::try_create_with_progress(progress.clone(), table.clone()).unwrap();
+
+    // Different partitions => different (partition, bucket) lanes.
+    writer0
+        .transform(make_block(vec![0, 0, 0, 0], vec![1, 2, 3, 4], vec![
+            "a", "b", "c", "d",
+        ]))
+        .await
+        .unwrap();
+    writer1
+        .transform(make_block(vec![1, 1, 1, 1], vec![5, 6, 7, 8], vec![
+            "e", "f", "g", "h",
+        ]))
+        .await
+        .unwrap();
+
+    let mut metas = Vec::new();
+    if let Some(block) = writer0.on_finish(true).await.unwrap() {
+        metas.push(block);
+    }
+    if let Some(block) = writer1.on_finish(true).await.unwrap() {
+        metas.push(block);
+    }
+    assert_eq!(metas.len(), 2);
+
+    let before = latest_snapshot_id(&table).await;
+    commit_messages(&table, metas).await.unwrap();
+    let after = latest_snapshot_id(&table).await;
+    assert_eq!(after, before.map_or(Some(1), |id| Some(id + 1)));
+    assert_eq!(read_all_rows(&table).await.unwrap().len(), 8);
+
+    // Empty meta must not advance the snapshot.
+    let before_empty = latest_snapshot_id(&table).await;
+    commit_messages(&table, vec![]).await.unwrap();
+    let after_empty = latest_snapshot_id(&table).await;
+    assert_eq!(after_empty, before_empty);
+}
+
+#[tokio::test]
+async fn test_empty_write_does_not_create_snapshot() {
+    let wh = TestWarehouse::new();
+    let table = setup_empty_partitioned_pk_table(&wh.warehouse).await;
+    let progress = Arc::new(Progress::create());
+    let mut writer =
+        PaimonTableWriter::try_create_with_progress(progress, table.clone()).unwrap();
+
+    assert!(writer.transform(DataBlock::empty()).await.unwrap().is_none());
+    assert!(writer.on_finish(true).await.unwrap().is_none());
+
+    let before = latest_snapshot_id(&table).await;
+    commit_messages(&table, vec![]).await.unwrap();
+    assert_eq!(latest_snapshot_id(&table).await, before);
+    assert!(read_all_rows(&table).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_failed_prepare_does_not_commit() {
+    let wh = TestWarehouse::new();
+    let table = setup_empty_partitioned_pk_table(&wh.warehouse).await;
+    let progress = Arc::new(Progress::create());
+    let mut writer =
+        PaimonTableWriter::try_create_with_progress(progress, table.clone()).unwrap();
+
+    writer
+        .transform(make_block(vec![0], vec![1], vec!["x"]))
+        .await
+        .unwrap();
+    let meta_block = writer.on_finish(true).await.unwrap().expect("meta");
+
+    // Simulate a failed pipeline: meta was produced but never delivered to the sink.
+    let before = latest_snapshot_id(&table).await;
+    assert!(before.is_none());
+    assert!(read_all_rows(&table).await.unwrap().is_empty());
+
+    // Committing the same meta later still works (files already on disk).
+    commit_messages(&table, vec![meta_block]).await.unwrap();
+    assert_eq!(latest_snapshot_id(&table).await, Some(1));
+    assert_eq!(read_all_rows(&table).await.unwrap().len(), 1);
+}
+
 fn fixture_commit_message() -> CommitMessage {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -65,8 +166,8 @@ fn fixture_commit_message() -> CommitMessage {
             .expect("create db");
 
         let schema = Schema::builder()
-            .column("id", DataType::Int(IntType::new()))
-            .column("value", DataType::VarChar(VarCharType::string_type()))
+            .column("id", PaimonDataType::Int(IntType::new()))
+            .column("value", PaimonDataType::VarChar(VarCharType::string_type()))
             .primary_key(["id"])
             .option("bucket", "1")
             .build()
@@ -121,4 +222,102 @@ fn truncate_creation_time_to_millis(files: &mut [DataFileMeta]) {
             file.creation_time = DateTime::<Utc>::from_timestamp_millis(ts.timestamp_millis());
         }
     }
+}
+
+async fn setup_empty_partitioned_pk_table(warehouse: &str) -> paimon::Table {
+    let catalog = filesystem_catalog(warehouse);
+    catalog
+        .create_database("db", false, Default::default())
+        .await
+        .expect("create db");
+    let schema = Schema::builder()
+        .column("part", PaimonDataType::Int(IntType::new()))
+        .column("id", PaimonDataType::Int(IntType::new()))
+        .column("value", PaimonDataType::VarChar(VarCharType::string_type()))
+        .partition_keys(["part"])
+        .primary_key(["part", "id"])
+        .option("bucket", "2")
+        .build()
+        .expect("schema");
+    let identifier = Identifier::new("db", "parallel_write");
+    catalog
+        .create_table(&identifier, schema, false)
+        .await
+        .expect("create table");
+    catalog.get_table(&identifier).await.expect("get table")
+}
+
+fn make_block(parts: Vec<i32>, ids: Vec<i32>, values: Vec<&str>) -> DataBlock {
+    let arrow_schema = Arc::new(ArrowSchema::new(vec![
+        ArrowField::new("part", ArrowDataType::Int32, false),
+        ArrowField::new("id", ArrowDataType::Int32, false),
+        ArrowField::new("value", ArrowDataType::Utf8, false),
+    ]));
+    let batch = RecordBatch::try_new(arrow_schema, vec![
+        Arc::new(Int32Array::from(parts)),
+        Arc::new(Int32Array::from(ids)),
+        Arc::new(StringArray::from(values)),
+    ])
+    .expect("record batch");
+    let schema = DataSchema::new(vec![
+        DataField::new("part", DataType::Number(NumberDataType::Int32)),
+        DataField::new("id", DataType::Number(NumberDataType::Int32)),
+        DataField::new("value", DataType::String),
+    ]);
+    DataBlock::from_record_batch(&schema, &batch).expect("datablock")
+}
+
+async fn latest_snapshot_id(table: &paimon::Table) -> Option<i64> {
+    let manager = SnapshotManager::new(table.file_io().clone(), table.location().to_string());
+    manager
+        .get_latest_snapshot_id()
+        .await
+        .expect("latest snapshot id")
+}
+
+async fn commit_messages(
+    table: &paimon::Table,
+    metas: Vec<DataBlock>,
+) -> databend_common_exception::Result<()> {
+    let mut sink = PaimonCommitSink::new(table.clone());
+    for block in metas {
+        sink.consume(block).await?;
+    }
+    sink.on_finish().await
+}
+
+async fn read_all_rows(
+    table: &paimon::Table,
+) -> databend_common_exception::Result<Vec<(i32, i32, String)>> {
+    let read_builder = table.new_read_builder();
+    let plan = read_builder.new_scan().plan().await.expect("scan plan");
+    let table_read = read_builder.new_read().expect("table read");
+    let mut rows = Vec::new();
+    for split in plan.splits() {
+        let mut stream = table_read
+            .to_arrow(std::slice::from_ref(split))
+            .expect("arrow stream");
+        while let Some(batch) = stream.next().await {
+            let batch = batch.expect("batch");
+            let parts = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int32Array>()
+                .expect("part");
+            let ids = batch
+                .column(1)
+                .as_any()
+                .downcast_ref::<Int32Array>()
+                .expect("id");
+            let values = batch
+                .column(2)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .expect("value");
+            for i in 0..batch.num_rows() {
+                rows.push((parts.value(i), ids.value(i), values.value(i).to_string()));
+            }
+        }
+    }
+    Ok(rows)
 }

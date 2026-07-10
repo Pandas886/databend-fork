@@ -8,6 +8,7 @@ publish = false
 
 [dependencies]
 arrow-array = { workspace = true }
+arrow-cast = { workspace = true }
 arrow-schema = { workspace = true }
 async-backtrace = { workspace = true }
 async-trait = { workspace = true }
@@ -19,6 +20,7 @@ databend-common-exception = { workspace = true }
 databend-common-expression = { workspace = true }
 databend-common-meta-app = { workspace = true }
 databend-common-pipeline = { workspace = true }
+databend-common-pipeline-transforms = { workspace = true }
 databend-common-storage = { workspace = true }
 databend-meta-client = { workspace = true }
 databend-common-users = { workspace = true }
