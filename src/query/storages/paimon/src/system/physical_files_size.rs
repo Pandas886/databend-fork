@@ -21,9 +21,8 @@ use paimon::table::referenced_files::collect_physical_files_summary;
 use crate::error::map_paimon_result;
 
 pub async fn read(table: &paimon::Table) -> Result<DataBlock> {
-    let summary = map_paimon_result(
-        collect_physical_files_summary(table.file_io(), table.location()).await,
-    )?;
+    let summary =
+        map_paimon_result(collect_physical_files_summary(table.file_io(), table.location()).await)?;
     Ok(DataBlock::new_from_columns(vec![
         Int64Type::from_data(vec![summary.manifest_file_count]),
         Int64Type::from_data(vec![summary.manifest_file_size]),
