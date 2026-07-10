@@ -17,6 +17,7 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
+use std::sync::OnceLock;
 
 use databend_common_catalog::catalog::StorageDescription;
 use databend_common_catalog::plan::DataSourceInfo;
@@ -38,14 +39,20 @@ use databend_common_meta_app::schema::CatalogOption;
 use databend_common_meta_app::schema::TableIdent;
 use databend_common_meta_app::schema::TableInfo;
 use databend_common_meta_app::schema::TableMeta;
+use databend_common_meta_app::schema::UpdateStreamMetaReq;
+use databend_common_meta_app::schema::UpsertTableCopiedFileReq;
 use databend_common_pipeline::core::Pipeline;
-use paimon::CatalogFactory;
+use databend_common_pipeline_transforms::TransformPipelineHelper;
+use databend_storages_common_table_meta::meta::SnapshotId;
+use databend_storages_common_table_meta::meta::TableMetaTimestamps;
+use paimon::FileSystemCatalog;
 use paimon::Options;
 use paimon::catalog::Identifier;
+use paimon::spec::CoreOptions;
+use paimon::spec::POSTPONE_BUCKET;
 use paimon::spec::TableSchema as PaimonTableSchema;
 use serde::Deserialize;
 use serde::Serialize;
-use tokio::sync::OnceCell;
 
 use crate::PaimonPartInfo;
 use crate::SerializableDataSplit;
@@ -55,6 +62,8 @@ use crate::predicate::apply_pushdowns;
 use crate::predicate::can_push_limit;
 use crate::source::PaimonTableSource;
 use crate::table::descriptor::PAIMON_TABLE_DESCRIPTOR_KEY;
+use crate::write::PaimonCommitSink;
+use crate::write::PaimonTableWriter;
 
 pub const PAIMON_ENGINE: &str = "PAIMON";
 
@@ -83,7 +92,7 @@ pub struct PaimonTable {
     info: TableInfo,
     descriptor: PaimonTableDescriptor,
     catalog_options: HashMap<String, String>,
-    table: OnceCell<paimon::Table>,
+    table: OnceLock<paimon::Table>,
 }
 
 pub(crate) mod descriptor {
@@ -98,7 +107,7 @@ impl PaimonTable {
             info,
             descriptor,
             catalog_options,
-            table: OnceCell::new(),
+            table: OnceLock::new(),
         }))
     }
 
@@ -144,11 +153,13 @@ impl PaimonTable {
             },
             ..Default::default()
         };
+        let cell = OnceLock::new();
+        let _ = cell.set(table);
         Ok(Arc::new(Self {
             info,
             descriptor,
             catalog_options,
-            table: OnceCell::new(),
+            table: cell,
         }))
     }
 
@@ -164,22 +175,61 @@ impl PaimonTable {
         Ok(raw.clone())
     }
 
-    async fn loaded_table(&self) -> Result<&paimon::Table> {
-        self.table
-            .get_or_try_init(|| async {
-                let options = options_from_map(&self.catalog_options)?;
-                let catalog = map_paimon_result(CatalogFactory::create(options).await)?;
-                let loaded =
-                    map_paimon_result(catalog.get_table(&self.descriptor.identifier).await)?;
-                Ok(paimon::Table::new(
-                    loaded.file_io().clone(),
-                    loaded.identifier().clone(),
-                    loaded.location().to_string(),
-                    loaded.schema().clone(),
-                    loaded.rest_env().cloned(),
-                ))
-            })
-            .await
+    /// Reject unsupported insert modes: overwrite, dynamic bucket, postpone bucket.
+    pub fn validate_insert(&self, overwrite: bool) -> Result<()> {
+        if overwrite {
+            return Err(ErrorCode::Unimplemented(
+                "Paimon insert does not support overwrite".to_string(),
+            ));
+        }
+        let schema = &self.descriptor.schema;
+        let bucket = CoreOptions::new(schema.options()).bucket();
+        if !schema.primary_keys().is_empty() && bucket == -1 {
+            return Err(ErrorCode::Unimplemented(
+                "Paimon insert does not support dynamic bucket tables".to_string(),
+            ));
+        }
+        if bucket == POSTPONE_BUCKET {
+            return Err(ErrorCode::Unimplemented(
+                "Paimon insert does not support postpone bucket tables".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn loaded_table(&self) -> Result<&paimon::Table> {
+        if let Some(table) = self.table.get() {
+            return Ok(table);
+        }
+        let opened = self.open_paimon_table()?;
+        let _ = self.table.set(opened);
+        Ok(self.table.get().expect("paimon table initialized"))
+    }
+
+    fn open_paimon_table(&self) -> Result<paimon::Table> {
+        let options = options_from_map(&self.catalog_options)?;
+        let metastore = self
+            .catalog_options
+            .get("metastore")
+            .map(|s| s.as_str())
+            .unwrap_or("filesystem");
+        let file_io = if metastore == "filesystem" {
+            let catalog = FileSystemCatalog::new(options).map_err(map_paimon_error)?;
+            catalog.file_io().clone()
+        } else {
+            paimon::io::FileIO::from_path(&self.descriptor.location)
+                .map_err(map_paimon_error)?
+                .with_props(options.to_map().iter())
+                .build()
+                .map_err(map_paimon_error)?
+        };
+        Ok(paimon::Table::new(
+            file_io,
+            self.descriptor.identifier.clone(),
+            self.descriptor.location.clone(),
+            self.descriptor.schema.clone(),
+            None,
+        ))
     }
 
     #[async_backtrace::framed]
@@ -187,7 +237,7 @@ impl PaimonTable {
         &self,
         push_downs: Option<PushDownInfo>,
     ) -> Result<(PartStatistics, Partitions)> {
-        let table = self.loaded_table().await?;
+        let table = self.loaded_table()?;
         let (read_builder, analysis) =
             apply_pushdowns(table, push_downs.as_ref(), self.schema().as_ref());
         let plan = map_paimon_result(read_builder.new_scan().plan().await)?;
@@ -319,6 +369,11 @@ impl Table for PaimonTable {
     }
 
     fn is_read_only(&self) -> bool {
+        // Catalog DDL remains read-only; row inserts go through append_data/commit_insertion.
+        false
+    }
+
+    fn support_distributed_insert(&self) -> bool {
         true
     }
 
@@ -340,6 +395,35 @@ impl Table for PaimonTable {
         _put_cache: bool,
     ) -> Result<()> {
         self.do_read_data(ctx, plan, pipeline)
+    }
+
+    fn append_data(
+        &self,
+        ctx: Arc<dyn TableContext>,
+        pipeline: &mut Pipeline,
+        _table_meta_timestamps: TableMetaTimestamps,
+    ) -> Result<()> {
+        let table = self.loaded_table()?.clone();
+        pipeline.try_add_async_accumulating_transformer(move || {
+            PaimonTableWriter::try_create(ctx.clone(), table.clone())
+        })?;
+        Ok(())
+    }
+
+    fn commit_insertion(
+        &self,
+        _ctx: Arc<dyn TableContext>,
+        pipeline: &mut Pipeline,
+        _copied_files: Option<UpsertTableCopiedFileReq>,
+        _update_stream_meta: Vec<UpdateStreamMetaReq>,
+        overwrite: bool,
+        _prev_snapshot_id: Option<SnapshotId>,
+        _deduplicated_label: Option<String>,
+        _table_meta_timestamps: TableMetaTimestamps,
+    ) -> Result<()> {
+        self.validate_insert(overwrite)?;
+        pipeline.try_resize(1)?;
+        pipeline.add_sink(|input| PaimonCommitSink::try_create(input, self.loaded_table()?.clone()))
     }
 
     fn table_args(&self) -> Option<TableArgs> {
