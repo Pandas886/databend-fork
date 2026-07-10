@@ -63,5 +63,9 @@ path = "tests/system_tables.rs"
 name = "write_router"
 path = "tests/write_router.rs"
 
+[[test]]
+name = "write_pipeline"
+path = "tests/write_pipeline.rs"
+
 [lints]
 workspace = true

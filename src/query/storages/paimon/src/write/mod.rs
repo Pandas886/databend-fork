@@ -12,8 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+mod meta;
 mod router;
 
+pub use meta::PaimonCommitMeta;
 pub use router::PaimonWriteRoute;
 pub use router::PaimonWriteRouter;
 pub use router::encode_route_key;
