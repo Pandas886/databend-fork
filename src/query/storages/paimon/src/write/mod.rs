@@ -12,10 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+mod commit;
 mod meta;
 mod router;
+mod writer;
 
+pub use commit::PaimonCommitSink;
 pub use meta::PaimonCommitMeta;
 pub use router::PaimonWriteRoute;
 pub use router::PaimonWriteRouter;
 pub use router::encode_route_key;
+pub use writer::PaimonTableWriter;

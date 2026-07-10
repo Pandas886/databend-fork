@@ -5224,6 +5224,7 @@ name = "databend-common-storages-paimon"
 version = "0.1.0"
 dependencies = [
  "arrow-array 58.1.0",
+ "arrow-cast 58.1.0",
  "arrow-schema 58.1.0",
  "async-backtrace",
  "async-trait",
@@ -5235,6 +5236,7 @@ dependencies = [
  "databend-common-expression",
  "databend-common-meta-app",
  "databend-common-pipeline",
+ "databend-common-pipeline-transforms",
  "databend-common-storage",
  "databend-common-users",
  "databend-meta-client 260205.12.0",
