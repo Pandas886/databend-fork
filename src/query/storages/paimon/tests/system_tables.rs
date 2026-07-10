@@ -188,6 +188,27 @@ async fn files_manifests_partitions() {
 }
 
 #[tokio::test]
+async fn all_kinds_match_registered_schema() {
+    let warehouse = TestWarehouse::new();
+    let identifier = setup_multi_split_append_table(&warehouse.warehouse).await;
+    let catalog = Arc::new(filesystem_catalog(&warehouse.warehouse));
+    let table = catalog.get_table(&identifier).await.expect("get table");
+
+    // Every registered kind must read without error and emit exactly the columns
+    // declared by its schema, guarding against collector/schema drift.
+    for kind in PaimonSystemTableKind::ALL {
+        let block = read_system_table(kind, catalog.clone(), identifier.clone(), table.clone())
+            .await
+            .unwrap_or_else(|err| panic!("read {kind:?}: {err}"));
+        assert_eq!(
+            block.num_columns(),
+            kind.schema().num_fields(),
+            "{kind:?} column count"
+        );
+    }
+}
+
+#[tokio::test]
 async fn size_and_indexes() {
     let warehouse = TestWarehouse::new();
     let identifier = setup_multi_split_append_table(&warehouse.warehouse).await;
