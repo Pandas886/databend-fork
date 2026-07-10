@@ -173,6 +173,18 @@ TBLPROPERTIES ('primary-key'='part,id', 'bucket'='4')
 """
     )
 
+    # Cluster write regression: bucket counts below / near / above typical writer lanes.
+    for buckets in (2, 8, 64):
+        table = f"write_pk_part_b{buckets}"
+        spark.sql(f"DROP TABLE IF EXISTS paimon.regression.{table}")
+        spark.sql(
+            f"""
+CREATE TABLE paimon.regression.{table} (id INT, value STRING, part INT)
+USING paimon PARTITIONED BY (part)
+TBLPROPERTIES ('primary-key'='part,id', 'bucket'='{buckets}')
+"""
+        )
+
     print("Prepared Paimon filesystem warehouse at", warehouse)
 
 

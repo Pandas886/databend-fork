@@ -31,6 +31,120 @@ pub fn encode_route_key(partition: &[u8], bucket: i32) -> Vec<u8> {
     key
 }
 
+/// Test/debug-only: record that `route_key` is owned by `(executor_id, lane_id)`
+/// for `query_id`. Same route mapped to two lanes returns an internal error so
+/// cluster regressions fail the constraint rather than only checking final rows.
+///
+/// Compiled out of release builds (no production HashMap).
+#[cfg(any(test, debug_assertions))]
+pub fn observe_route_lane(
+    query_id: &str,
+    route_key: &[u8],
+    executor_id: &str,
+    lane_id: u64,
+) -> Result<()> {
+    lane_observe::observe_route_lane(query_id, route_key, executor_id, lane_id)
+}
+
+#[cfg(not(any(test, debug_assertions)))]
+pub fn observe_route_lane(
+    _query_id: &str,
+    _route_key: &[u8],
+    _executor_id: &str,
+    _lane_id: u64,
+) -> Result<()> {
+    Ok(())
+}
+
+/// Allocate a process-local writer lane id (test/debug observation).
+#[cfg(any(test, debug_assertions))]
+pub fn next_lane_id_for_test() -> u64 {
+    lane_observe::next_lane_id()
+}
+
+#[cfg(not(any(test, debug_assertions)))]
+pub fn next_lane_id_for_test() -> u64 {
+    0
+}
+
+#[doc(hidden)]
+#[cfg(any(test, debug_assertions))]
+pub fn reset_lane_observations_for_test() {
+    lane_observe::reset();
+}
+
+#[doc(hidden)]
+#[cfg(any(test, debug_assertions))]
+pub fn lane_observation_count_for_test() -> usize {
+    lane_observe::count()
+}
+
+#[cfg(any(test, debug_assertions))]
+mod lane_observe {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    use std::sync::OnceLock;
+    use std::sync::atomic::AtomicU64;
+    use std::sync::atomic::Ordering;
+
+    use databend_common_exception::ErrorCode;
+    use databend_common_exception::Result;
+
+    static NEXT_LANE_ID: AtomicU64 = AtomicU64::new(1);
+    static OBSERVATIONS: OnceLock<Mutex<HashMap<(String, Vec<u8>), (String, u64)>>> =
+        OnceLock::new();
+
+    fn observations() -> &'static Mutex<HashMap<(String, Vec<u8>), (String, u64)>> {
+        OBSERVATIONS.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
+    pub fn next_lane_id() -> u64 {
+        NEXT_LANE_ID.fetch_add(1, Ordering::SeqCst)
+    }
+
+    pub fn observe_route_lane(
+        query_id: &str,
+        route_key: &[u8],
+        executor_id: &str,
+        lane_id: u64,
+    ) -> Result<()> {
+        let mut map = observations().lock().map_err(|_| {
+            ErrorCode::Internal("Paimon lane observation lock poisoned".to_string())
+        })?;
+        let key = (query_id.to_string(), route_key.to_vec());
+        match map.get(&key) {
+            Some((prev_executor, prev_lane))
+                if prev_executor.as_str() != executor_id || *prev_lane != lane_id =>
+            {
+                Err(ErrorCode::Internal(format!(
+                    "Paimon route key mapped to multiple writer lanes in one query: \
+                     query_id={query_id}, executor={prev_executor}/{executor_id}, \
+                     lane={prev_lane}/{lane_id}"
+                )))
+            }
+            Some(_) => Ok(()),
+            None => {
+                map.insert(key, (executor_id.to_string(), lane_id));
+                Ok(())
+            }
+        }
+    }
+
+    pub fn reset() {
+        if let Ok(mut map) = observations().lock() {
+            map.clear();
+        }
+        NEXT_LANE_ID.store(1, Ordering::SeqCst);
+    }
+
+    pub fn count() -> usize {
+        observations()
+            .lock()
+            .map(|map| map.len())
+            .unwrap_or(0)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PaimonWriteRoute {
     pub partition: Vec<u8>,
