@@ -22,6 +22,9 @@ use common::setup_multi_split_append_table;
 use common::setup_paimon_fixture;
 use common::setup_pk_table;
 use databend_common_catalog::table::Table;
+use databend_common_expression::DataBlock;
+use databend_common_expression::types::AccessType;
+use databend_common_expression::types::StringType;
 use databend_common_sql::executor::table_read_plan::ToReadDataSourcePlan;
 use databend_common_storages_paimon::PaimonTable;
 use databend_common_storages_paimon::apply_pushdowns;
@@ -30,6 +33,7 @@ use databend_common_storages_paimon::reset_table_load_count_for_test;
 use databend_common_storages_paimon::table_load_count_for_test;
 use databend_query::sessions::TableContextSettings;
 use futures::StreamExt;
+use futures::TryStreamExt;
 use paimon::Catalog;
 use pipeline::collect_id_name_rows;
 use pipeline::projection_indices;
@@ -98,6 +102,44 @@ async fn test_no_filter_limit_one_row_via_sql() -> databend_common_exception::Re
     let block = stream.next().await.transpose()?.expect("result block");
     assert_eq!(block.num_rows(), 1);
     assert_eq!(collect_id_name_rows(&[block]).len(), 1);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_show_databases_in_paimon_catalog() -> databend_common_exception::Result<()> {
+    let wh = TestWarehouse::new();
+    let _ = setup_append_table(&wh.warehouse).await;
+    let fixture = setup_paimon_fixture().await?;
+    fixture.execute_command(drop_paimon_catalog_sql()).await?;
+    fixture
+        .execute_command(&create_paimon_catalog_sql(&wh.warehouse))
+        .await?;
+    fixture.execute_command("USE CATALOG paimon_it").await?;
+
+    let blocks = fixture
+        .execute_query("SHOW DATABASES")
+        .await?
+        .try_collect::<Vec<_>>()
+        .await?;
+    let block = DataBlock::concat(&blocks)?;
+    let db_name_col = StringType::try_downcast_column(
+        block.get_by_offset(0)
+            .as_column()
+            .expect("database name column"),
+    )
+    .expect("database names");
+    let db_names = (0..block.num_rows())
+        .map(|idx| StringType::index_column(&db_name_col, idx).unwrap().to_string())
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        db_names,
+        vec![
+            "db".to_string(),
+            "information_schema".to_string(),
+            "system".to_string(),
+        ]
+    );
     Ok(())
 }
 
