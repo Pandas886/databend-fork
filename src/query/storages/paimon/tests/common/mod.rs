@@ -45,6 +45,7 @@ use paimon::spec::DataType;
 use paimon::spec::IntType;
 use paimon::spec::Schema;
 use paimon::spec::VarCharType;
+use paimon::table::BranchManager;
 use tempfile::TempDir;
 
 pub struct TestWarehouse {
@@ -123,6 +124,48 @@ pub async fn setup_append_table(warehouse: &str) -> Identifier {
         .expect("create append table");
     let table = catalog.get_table(&identifier).await.expect("get table");
     write_batch(&table, vec![1, 2, 3], vec!["a", "b", "c"]).await;
+    identifier
+}
+
+pub async fn setup_metadata_table(warehouse: &str) -> Identifier {
+    let catalog = filesystem_catalog(warehouse);
+    catalog
+        .create_database("db", false, HashMap::new())
+        .await
+        .expect("create db");
+    let schema = Schema::builder()
+        .column("id", DataType::Int(IntType::new()))
+        .column("name", DataType::VarChar(VarCharType::string_type()))
+        .option("test.option", "metadata-value")
+        .build()
+        .expect("schema");
+    let identifier = Identifier::new("db", "metadata_t");
+    catalog
+        .create_table(&identifier, schema, false)
+        .await
+        .expect("create metadata table");
+    let table = catalog.get_table(&identifier).await.expect("get table");
+    write_batch(&table, vec![1], vec!["a"]).await;
+    write_batch(&table, vec![2], vec!["b"]).await;
+
+    let branch_manager = BranchManager::new(table.file_io().clone(), table.location().to_string());
+    branch_manager
+        .create_branch("dev")
+        .await
+        .expect("create branch");
+    let snapshot_manager =
+        paimon::SnapshotManager::new(table.file_io().clone(), table.location().to_string());
+    let snapshot = snapshot_manager
+        .get_latest_snapshot()
+        .await
+        .expect("get latest snapshot")
+        .expect("latest snapshot");
+    let tag_manager =
+        paimon::TagManager::new(table.file_io().clone(), table.location().to_string());
+    tag_manager
+        .create("release", &snapshot)
+        .await
+        .expect("create tag");
     identifier
 }
 
