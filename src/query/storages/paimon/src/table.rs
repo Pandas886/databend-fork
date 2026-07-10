@@ -175,26 +175,39 @@ impl PaimonTable {
         Ok(raw.clone())
     }
 
-    /// Reject unsupported insert modes: overwrite, dynamic bucket, postpone bucket.
+    /// Reject unsupported insert modes: overwrite, and PK tables with `bucket < 1`
+    /// (dynamic `-1`, postpone `-2`, or other invalid values).
     pub fn validate_insert(&self, overwrite: bool) -> Result<()> {
-        if overwrite {
-            return Err(ErrorCode::Unimplemented(
-                "Paimon insert does not support overwrite".to_string(),
-            ));
-        }
+        let table = &self.info.desc;
         let schema = &self.descriptor.schema;
         let bucket = CoreOptions::new(schema.options()).bucket();
-        if !schema.primary_keys().is_empty() && bucket == -1 {
-            return Err(ErrorCode::Unimplemented(
-                "Paimon insert does not support dynamic bucket tables".to_string(),
-            ));
+        let write_mode = if overwrite { "overwrite" } else { "insert" };
+
+        if overwrite {
+            return Err(ErrorCode::Unimplemented(format!(
+                "Paimon table {table} does not support overwrite insert (bucket={bucket}, write_mode={write_mode})"
+            )));
         }
-        if bucket == POSTPONE_BUCKET {
-            return Err(ErrorCode::Unimplemented(
-                "Paimon insert does not support postpone bucket tables".to_string(),
-            ));
+
+        // Append-only tables (no primary keys) are supported regardless of bucket.
+        if schema.primary_keys().is_empty() {
+            return Ok(());
         }
-        Ok(())
+
+        if bucket >= 1 {
+            return Ok(());
+        }
+
+        let reason = if bucket == -1 {
+            "dynamic bucket"
+        } else if bucket == POSTPONE_BUCKET {
+            "postpone bucket"
+        } else {
+            "bucket < 1"
+        };
+        Err(ErrorCode::Unimplemented(format!(
+            "Paimon table {table} does not support {reason} for insert (bucket={bucket}, write_mode={write_mode})"
+        )))
     }
 
     fn loaded_table(&self) -> Result<&paimon::Table> {
