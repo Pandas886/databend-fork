@@ -24,11 +24,11 @@ pub use route_transform::TransformPaimonWriteRoute;
 pub use router::PaimonWriteRoute;
 pub use router::PaimonWriteRouter;
 pub use router::encode_route_key;
-pub use router::observe_route_lane;
 #[cfg(any(test, debug_assertions))]
 pub use router::lane_observation_count_for_test;
 #[cfg(any(test, debug_assertions))]
 pub use router::next_lane_id_for_test;
+pub use router::observe_route_lane;
 #[cfg(any(test, debug_assertions))]
 pub use router::reset_lane_observations_for_test;
 pub use writer::PaimonTableWriter;

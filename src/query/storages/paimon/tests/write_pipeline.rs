@@ -112,7 +112,10 @@ async fn test_write_support_matrix() {
     assert!(zero_err.contains("zero_pk"), "{zero_err}");
 
     let overwrite_err = fixed_pk_table.validate_insert(true).unwrap_err().message();
-    assert!(overwrite_err.contains("write_mode=overwrite"), "{overwrite_err}");
+    assert!(
+        overwrite_err.contains("write_mode=overwrite"),
+        "{overwrite_err}"
+    );
     assert!(overwrite_err.contains("fixed_pk"), "{overwrite_err}");
 }
 
@@ -182,10 +185,15 @@ async fn test_empty_write_does_not_create_snapshot() {
     let wh = TestWarehouse::new();
     let table = setup_empty_partitioned_pk_table(&wh.warehouse).await;
     let progress = Arc::new(Progress::create());
-    let mut writer =
-        PaimonTableWriter::try_create_with_progress(progress, table.clone()).unwrap();
+    let mut writer = PaimonTableWriter::try_create_with_progress(progress, table.clone()).unwrap();
 
-    assert!(writer.transform(DataBlock::empty()).await.unwrap().is_none());
+    assert!(
+        writer
+            .transform(DataBlock::empty())
+            .await
+            .unwrap()
+            .is_none()
+    );
     assert!(writer.on_finish(true).await.unwrap().is_none());
 
     let before = latest_snapshot_id(&table).await;
@@ -198,16 +206,17 @@ async fn test_empty_write_does_not_create_snapshot() {
 async fn test_unsunk_meta_does_not_commit() {
     // Writer prepare can succeed and emit meta; without delivering it to the
     // sink (pipeline abort / CALL_ON_FINISH_ON_ERROR=false), no snapshot is created.
-    assert!(
-        !PaimonCommitSink::CALL_ON_FINISH_ON_ERROR,
-        "abort after partial consume must not call on_finish/commit"
-    );
+    const {
+        assert!(
+            !PaimonCommitSink::CALL_ON_FINISH_ON_ERROR,
+            "abort after partial consume must not call on_finish/commit"
+        );
+    }
 
     let wh = TestWarehouse::new();
     let table = setup_empty_partitioned_pk_table(&wh.warehouse).await;
     let progress = Arc::new(Progress::create());
-    let mut writer =
-        PaimonTableWriter::try_create_with_progress(progress, table.clone()).unwrap();
+    let mut writer = PaimonTableWriter::try_create_with_progress(progress, table.clone()).unwrap();
 
     writer
         .transform(make_block(vec![0], vec![1], vec!["x"]))

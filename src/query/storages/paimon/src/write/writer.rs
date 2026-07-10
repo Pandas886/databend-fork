@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(any(test, debug_assertions))]
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;
@@ -28,9 +30,6 @@ use paimon::table::TableWrite;
 
 use crate::error::map_paimon_error;
 use crate::write::meta::PaimonCommitMeta;
-
-#[cfg(any(test, debug_assertions))]
-use std::collections::HashSet;
 #[cfg(any(test, debug_assertions))]
 use crate::write::router::PaimonWriteRouter;
 #[cfg(any(test, debug_assertions))]

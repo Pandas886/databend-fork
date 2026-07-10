@@ -81,12 +81,7 @@ async fn setup_tables(warehouse: &str) -> (Identifier, Identifier) {
 
 fn dummy_select_plan(num_fields: usize) -> (PhysicalPlan, Vec<databend_common_sql::ColumnBinding>) {
     let fields: Vec<_> = (0..num_fields)
-        .map(|i| {
-            DataField::new(
-                &i.to_string(),
-                DataType::Number(NumberDataType::Int32),
-            )
-        })
+        .map(|i| DataField::new(&i.to_string(), DataType::Number(NumberDataType::Int32)))
         .collect();
     // Last field may be String for name columns — keep Int32 for plan-structure test.
     let output_schema = DataSchemaRefExt::create(fields);
@@ -147,8 +142,7 @@ fn assert_pk_write_route_shape(plan: &PhysicalPlan) {
     );
 
     // Merge → DistributedInsertSelect → GlobalShuffle → PaimonWriteRoute
-    let outer =
-        Exchange::from_physical_plan(plan).expect("pk plan must start with Merge Exchange");
+    let outer = Exchange::from_physical_plan(plan).expect("pk plan must start with Merge Exchange");
     assert_eq!(outer.kind, FragmentKind::Merge);
     let insert = DistributedInsertSelect::from_physical_plan(&outer.input)
         .expect("Merge must wrap DistributedInsertSelect");

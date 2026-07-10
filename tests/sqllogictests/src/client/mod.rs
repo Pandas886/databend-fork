@@ -153,7 +153,10 @@ mod tests {
     #[test]
     fn replace_placeholders_leaves_plain_sql() {
         let sql = "SELECT 1";
-        assert!(matches!(replace_placeholders(sql), Cow::Borrowed("SELECT 1")));
+        assert!(matches!(
+            replace_placeholders(sql),
+            Cow::Borrowed("SELECT 1")
+        ));
     }
 
     #[test]
