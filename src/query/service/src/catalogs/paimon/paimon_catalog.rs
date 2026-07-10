@@ -176,7 +176,10 @@ impl Catalog for PaimonCatalog {
 
     #[async_backtrace::framed]
     async fn list_databases_history(&self, tenant: &Tenant) -> Result<Vec<Arc<dyn Database>>> {
-        let mut dbs = self.immutable_catalog.list_databases_history(tenant).await?;
+        let mut dbs = self
+            .immutable_catalog
+            .list_databases_history(tenant)
+            .await?;
         let mut other = self.paimon_catalog.list_databases_history(tenant).await?;
         dbs.append(&mut other);
         Ok(dbs)
@@ -332,7 +335,9 @@ impl Catalog for PaimonCatalog {
         if let Some(table) = res {
             return Ok(table);
         }
-        self.paimon_catalog.get_table(tenant, db_name, table_name).await
+        self.paimon_catalog
+            .get_table(tenant, db_name, table_name)
+            .await
     }
 
     async fn mget_tables(
@@ -398,7 +403,9 @@ impl Catalog for PaimonCatalog {
         tenant: &Tenant,
         db_name: &str,
     ) -> Result<Vec<Arc<dyn Table>>> {
-        self.paimon_catalog.list_tables_history(tenant, db_name).await
+        self.paimon_catalog
+            .list_tables_history(tenant, db_name)
+            .await
     }
 
     async fn create_table(&self, req: CreateTableReq) -> Result<CreateTableReply> {
@@ -413,7 +420,10 @@ impl Catalog for PaimonCatalog {
         self.paimon_catalog.undrop_table(req).await
     }
 
-    async fn commit_table_meta(&self, req: databend_common_meta_app::schema::CommitTableMetaReq) -> Result<databend_common_meta_app::schema::CommitTableMetaReply> {
+    async fn commit_table_meta(
+        &self,
+        req: databend_common_meta_app::schema::CommitTableMetaReq,
+    ) -> Result<databend_common_meta_app::schema::CommitTableMetaReply> {
         self.paimon_catalog.commit_table_meta(req).await
     }
 
@@ -544,10 +554,7 @@ impl Catalog for PaimonCatalog {
         self.paimon_catalog.drop_dictionary(dict_ident).await
     }
 
-    async fn get_dictionary(
-        &self,
-        req: DictionaryNameIdent,
-    ) -> Result<Option<GetDictionaryReply>> {
+    async fn get_dictionary(&self, req: DictionaryNameIdent) -> Result<Option<GetDictionaryReply>> {
         self.paimon_catalog.get_dictionary(req).await
     }
 
