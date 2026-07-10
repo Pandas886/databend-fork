@@ -26,7 +26,10 @@ use serde::Deserialize;
 use serde::Serialize;
 
 mod branches;
+mod files;
+mod manifests;
 mod options;
+mod partitions;
 mod schemas;
 mod snapshots;
 mod table;
@@ -286,6 +289,9 @@ pub async fn read_system_table(
         PaimonSystemTableKind::Schemas => schemas::read(&table).await,
         PaimonSystemTableKind::Snapshots => snapshots::read(&table).await,
         PaimonSystemTableKind::Tags => tags::read(&table).await,
+        PaimonSystemTableKind::Files => files::read(&table).await,
+        PaimonSystemTableKind::Manifests => manifests::read(&table).await,
+        PaimonSystemTableKind::Partitions => partitions::read(&table).await,
         _ => Err(ErrorCode::Unimplemented(format!(
             "Paimon system table {kind:?} is not implemented"
         ))),
@@ -313,4 +319,44 @@ fn json<T: ?Sized + Serialize>(value: &T, field: &str) -> Result<String> {
     serde_json::to_string(value).map_err(|err| {
         ErrorCode::ReadTableDataError(format!("failed to serialize Paimon {field}: {err}"))
     })
+}
+
+/// Partition key fields (name + type) in partition-column order, used to decode
+/// a partition `BinaryRow` into a display string.
+fn partition_fields(table: &paimon::Table) -> Result<Vec<(String, paimon::spec::DataType)>> {
+    let schema = table.schema();
+    let fields = schema.fields();
+    schema
+        .partition_keys()
+        .iter()
+        .map(|key| {
+            fields
+                .iter()
+                .find(|field| field.name() == key)
+                .map(|field| (field.name().to_string(), field.data_type().clone()))
+                .ok_or_else(|| {
+                    ErrorCode::ReadTableDataError(format!(
+                        "Paimon partition key {key} is missing from table schema"
+                    ))
+                })
+        })
+        .collect()
+}
+
+/// Renders a partition `BinaryRow` as `[v0, v1]`, or `None` for unpartitioned tables.
+fn format_partition(
+    row: &paimon::spec::BinaryRow,
+    fields: &[(String, paimon::spec::DataType)],
+) -> Result<Option<String>> {
+    if fields.is_empty() || row.is_empty() {
+        return Ok(None);
+    }
+    let mut values = Vec::with_capacity(fields.len());
+    for (pos, (_name, data_type)) in fields.iter().enumerate() {
+        match crate::error::map_paimon_result(row.get_datum(pos, data_type))? {
+            Some(datum) => values.push(datum.to_string()),
+            None => values.push("null".to_string()),
+        }
+    }
+    Ok(Some(format!("[{}]", values.join(", "))))
 }
