@@ -60,7 +60,7 @@ impl<'a> PhysicalFormat for ExchangeFormatter<'a> {
                 FragmentKind::Expansive => "Broadcast".to_string(),
                 FragmentKind::Merge => "Merge".to_string(),
                 FragmentKind::GlobalShuffle => format!(
-                    "Hash({})",
+                    "GlobalShuffle({})",
                     self.inner
                         .keys
                         .iter()

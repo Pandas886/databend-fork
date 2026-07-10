@@ -210,6 +210,25 @@ impl PaimonTable {
         )))
     }
 
+    pub fn try_from_table(tbl: &dyn Table) -> Result<&Self> {
+        tbl.as_any().downcast_ref::<Self>().ok_or_else(|| {
+            ErrorCode::Internal(format!(
+                "expects Paimon engine, but got {}",
+                tbl.engine()
+            ))
+        })
+    }
+
+    /// Fixed-bucket primary-key tables need route + GlobalHash Exchange on write.
+    pub fn is_fixed_bucket_primary_key(&self) -> bool {
+        let schema = &self.descriptor.schema;
+        !schema.primary_keys().is_empty() && CoreOptions::new(schema.options()).bucket() >= 1
+    }
+
+    pub fn paimon_schema(&self) -> &PaimonTableSchema {
+        &self.descriptor.schema
+    }
+
     fn loaded_table(&self) -> Result<&paimon::Table> {
         if let Some(table) = self.table.get() {
             return Ok(table);

@@ -14,11 +14,13 @@
 
 mod commit;
 mod meta;
+mod route_transform;
 mod router;
 mod writer;
 
 pub use commit::PaimonCommitSink;
 pub use meta::PaimonCommitMeta;
+pub use route_transform::TransformPaimonWriteRoute;
 pub use router::PaimonWriteRoute;
 pub use router::PaimonWriteRouter;
 pub use router::encode_route_key;
