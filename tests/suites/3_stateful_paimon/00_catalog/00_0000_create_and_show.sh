@@ -28,6 +28,12 @@ USE CATALOG paimon_fs;
 SHOW DATABASES;
 EOF
 
+echo "===== catalog tables ====="
+cat <<'EOF' | bendsql_connect_root
+USE CATALOG paimon_fs;
+SHOW TABLES FROM regression;
+EOF
+
 echo "===== fully-qualified resolution (catalog -> db -> table) ====="
 echo "SELECT count(*) FROM paimon_fs.regression.append_t;" | bendsql_connect_root
 
