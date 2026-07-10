@@ -1,10 +1,14 @@
+# Warehouse path is substituted by databend-sqllogictests as $PAIMON_WAREHOUSE,
+# matching stateful Paimon shell tests:
+#   PAIMON_WAREHOUSE / PAIMON_WAREHOUSE_PATH / ${TESTS_DATA_DIR}/paimon_warehouse
+#   / <cwd>/tests/data/paimon_warehouse
 statement ok
 DROP CATALOG IF EXISTS paimon;
 
 statement ok
 CREATE CATALOG paimon TYPE = PAIMON CONNECTION = (
     METASTORE = 'filesystem',
-    WAREHOUSE = '/Users/huzekang/opensource/databend/tests/data/paimon_warehouse'
+    WAREHOUSE = '$PAIMON_WAREHOUSE'
 );
 
 statement ok
@@ -53,8 +57,9 @@ SELECT id, value, part FROM paimon.regression.write_pk_part;
 1 p2 2
 2 x 1
 
-# Empty INSERT must not create a snapshot. Append tables avoid the PK route
-# exchange path; PK empty INSERT currently fails with NetworkInboundChannelSet.
+# Empty INSERT must not create a snapshot.
+# PK empty INSERT is skipped: it fails with NetworkInboundChannelSet on the
+# route/exchange path. Append empty INSERT is used instead.
 query I
 SELECT count(*) FROM paimon.regression."write_append$snapshots";
 ----
