@@ -33,8 +33,11 @@ use educe::Educe;
 use paimon::catalog::Identifier;
 
 use crate::PaimonCatalog;
+use crate::ParsedName;
 use crate::error::map_paimon_result;
 use crate::error::read_only;
+use crate::parse_system_name;
+use crate::system::PaimonSystemTable;
 use crate::table::PaimonTable;
 
 #[derive(Clone, Educe)]
@@ -80,9 +83,33 @@ impl Database for PaimonDatabase {
 
     #[async_backtrace::framed]
     async fn get_table(&self, table_name: &str) -> Result<Arc<dyn Table>> {
-        let identifier = Identifier::new(self.database_name.clone(), table_name);
+        let (base, branch, kind) = match parse_system_name(table_name) {
+            ParsedName::Base(name) => (name, None, None),
+            ParsedName::System { base, branch, kind } => (base, branch, Some(kind)),
+            ParsedName::UnknownSystem { .. } => {
+                return Err(databend_common_exception::ErrorCode::UnknownTable(format!(
+                    "{}.{}",
+                    self.database_name, table_name
+                )));
+            }
+        };
+        let identifier = Identifier::new(self.database_name.clone(), base.clone());
         let paimon_table =
             map_paimon_result(self.catalog.paimon_catalog().get_table(&identifier).await)?;
+        if let Some(kind) = kind {
+            let object = match branch {
+                Some(branch) => format!("{base}$branch_{branch}"),
+                None => base,
+            };
+            return Ok(PaimonSystemTable::create(
+                self.catalog.info(),
+                table_name.to_string(),
+                kind,
+                self.catalog.paimon_catalog(),
+                Identifier::new(self.database_name.clone(), object),
+                paimon_table,
+            ));
+        }
         PaimonTable::from_paimon_table(
             self.catalog.info(),
             self.catalog.catalog_options().clone(),

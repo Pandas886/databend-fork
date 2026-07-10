@@ -1,0 +1,281 @@
+// Copyright 2021 Datafuse Labs
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+use std::sync::Arc;
+
+use databend_common_exception::ErrorCode;
+use databend_common_exception::Result;
+use databend_common_expression::DataBlock;
+use databend_common_expression::TableDataType;
+use databend_common_expression::TableField;
+use databend_common_expression::TableSchemaRef;
+use databend_common_expression::TableSchemaRefExt;
+use databend_common_expression::types::NumberDataType;
+use serde::Deserialize;
+use serde::Serialize;
+
+mod table;
+
+pub use table::PaimonSystemTable;
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub enum PaimonSystemTableKind {
+    Branches,
+    Files,
+    Manifests,
+    Options,
+    Partitions,
+    PhysicalFilesSize,
+    ReferencedFilesSize,
+    Schemas,
+    Snapshots,
+    TableIndexes,
+    Tags,
+}
+
+impl PaimonSystemTableKind {
+    pub const ALL: [Self; 11] = [
+        Self::Branches,
+        Self::Files,
+        Self::Manifests,
+        Self::Options,
+        Self::Partitions,
+        Self::PhysicalFilesSize,
+        Self::ReferencedFilesSize,
+        Self::Schemas,
+        Self::Snapshots,
+        Self::TableIndexes,
+        Self::Tags,
+    ];
+
+    pub fn parse(name: &str) -> Option<Self> {
+        match name.to_ascii_lowercase().as_str() {
+            "branches" => Some(Self::Branches),
+            "files" => Some(Self::Files),
+            "manifests" => Some(Self::Manifests),
+            "options" => Some(Self::Options),
+            "partitions" => Some(Self::Partitions),
+            "physical_files_size" => Some(Self::PhysicalFilesSize),
+            "referenced_files_size" => Some(Self::ReferencedFilesSize),
+            "schemas" => Some(Self::Schemas),
+            "snapshots" => Some(Self::Snapshots),
+            "table_indexes" => Some(Self::TableIndexes),
+            "tags" => Some(Self::Tags),
+            _ => None,
+        }
+    }
+
+    pub fn schema(self) -> TableSchemaRef {
+        use NumberDataType::*;
+        use TableDataType::*;
+
+        let string = || String;
+        let int32 = || Number(Int32);
+        let int64 = || Number(Int64);
+        let nullable = |ty| Nullable(Box::new(ty));
+        let fields = match self {
+            Self::Options => vec![f("key", string()), f("value", string())],
+            Self::Snapshots => vec![
+                f("snapshot_id", int64()),
+                f("schema_id", int64()),
+                f("commit_user", string()),
+                f("commit_identifier", int64()),
+                f("commit_kind", string()),
+                f("commit_time", Timestamp),
+                f("base_manifest_list", string()),
+                f("delta_manifest_list", string()),
+                f("changelog_manifest_list", nullable(string())),
+                f("total_record_count", nullable(int64())),
+                f("delta_record_count", nullable(int64())),
+                f("changelog_record_count", nullable(int64())),
+                f("watermark", nullable(int64())),
+                f("next_row_id", nullable(int64())),
+            ],
+            Self::Schemas => vec![
+                f("schema_id", int64()),
+                f("fields", string()),
+                f("partition_keys", string()),
+                f("primary_keys", string()),
+                f("options", string()),
+                f("comment", nullable(string())),
+                f("update_time", Timestamp),
+            ],
+            Self::Branches => vec![f("branch_name", string()), f("create_time", Timestamp)],
+            Self::Tags => vec![
+                f("tag_name", string()),
+                f("snapshot_id", int64()),
+                f("schema_id", int64()),
+                f("commit_time", Timestamp),
+                f("record_count", nullable(int64())),
+                f("create_time", nullable(Timestamp)),
+                f("time_retained", nullable(string())),
+            ],
+            Self::Files => vec![
+                f("partition", nullable(string())),
+                f("bucket", int32()),
+                f("file_path", string()),
+                f("file_format", string()),
+                f("schema_id", int64()),
+                f("level", int32()),
+                f("record_count", int64()),
+                f("file_size_in_bytes", int64()),
+                f("min_key", nullable(string())),
+                f("max_key", nullable(string())),
+                f("null_value_counts", string()),
+                f("min_value_stats", string()),
+                f("max_value_stats", string()),
+                f("min_sequence_number", nullable(int64())),
+                f("max_sequence_number", nullable(int64())),
+                f("creation_time", nullable(Timestamp)),
+                f("delete_row_count", nullable(int64())),
+                f("file_source", nullable(string())),
+                f("first_row_id", nullable(int64())),
+                f("write_cols", nullable(Array(Box::new(nullable(string()))))),
+            ],
+            Self::Manifests => vec![
+                f("file_name", string()),
+                f("file_size", int64()),
+                f("num_added_files", int64()),
+                f("num_deleted_files", int64()),
+                f("schema_id", int64()),
+                f("min_partition_stats", nullable(string())),
+                f("max_partition_stats", nullable(string())),
+                f("min_row_id", nullable(int64())),
+                f("max_row_id", nullable(int64())),
+            ],
+            Self::Partitions => vec![
+                f("partition", nullable(string())),
+                f("record_count", int64()),
+                f("file_size_in_bytes", int64()),
+                f("file_count", int64()),
+                f("last_update_time", nullable(Timestamp)),
+                f("created_at", nullable(Timestamp)),
+                f("created_by", nullable(string())),
+                f("updated_by", nullable(string())),
+                f("options", nullable(string())),
+                f("total_buckets", int32()),
+                f("done", Boolean),
+            ],
+            Self::PhysicalFilesSize => size_fields(false),
+            Self::ReferencedFilesSize => size_fields(true),
+            Self::TableIndexes => vec![
+                f("partition", nullable(string())),
+                f("bucket", int32()),
+                f("index_type", string()),
+                f("file_name", string()),
+                f("file_size", int64()),
+                f("row_count", int64()),
+                f(
+                    "dv_ranges",
+                    nullable(Array(Box::new(Tuple {
+                        fields_name: vec![
+                            "file_name".into(),
+                            "offset".into(),
+                            "length".into(),
+                            "cardinality".into(),
+                        ],
+                        fields_type: vec![string(), int32(), int32(), nullable(int64())],
+                    }))),
+                ),
+                f("row_range_start", nullable(int64())),
+                f("row_range_end", nullable(int64())),
+                f("index_field_id", nullable(int32())),
+                f("index_field_name", nullable(string())),
+            ],
+        };
+        TableSchemaRefExt::create(fields)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ParsedName {
+    Base(String),
+    System {
+        base: String,
+        branch: Option<String>,
+        kind: PaimonSystemTableKind,
+    },
+    UnknownSystem {
+        base: String,
+        suffix: String,
+    },
+}
+
+pub fn parse_system_name(name: &str) -> ParsedName {
+    let parts = name.split('$').collect::<Vec<_>>();
+    match parts.as_slice() {
+        [base, suffix] if !base.is_empty() => match PaimonSystemTableKind::parse(suffix) {
+            Some(kind) => ParsedName::System {
+                base: (*base).to_string(),
+                branch: None,
+                kind,
+            },
+            None => ParsedName::UnknownSystem {
+                base: (*base).to_string(),
+                suffix: (*suffix).to_string(),
+            },
+        },
+        [base, branch, suffix]
+            if !base.is_empty()
+                && branch.starts_with("branch_")
+                && branch.len() > "branch_".len() =>
+        {
+            match PaimonSystemTableKind::parse(suffix) {
+                Some(kind) => ParsedName::System {
+                    base: (*base).to_string(),
+                    branch: Some(branch["branch_".len()..].to_string()),
+                    kind,
+                },
+                None => ParsedName::UnknownSystem {
+                    base: (*base).to_string(),
+                    suffix: (*suffix).to_string(),
+                },
+            }
+        }
+        _ => ParsedName::Base(name.to_string()),
+    }
+}
+
+fn f(name: &str, ty: TableDataType) -> TableField {
+    TableField::new(name, ty)
+}
+
+fn size_fields(with_source: bool) -> Vec<TableField> {
+    let mut fields = Vec::new();
+    if with_source {
+        fields.push(f("source", TableDataType::String));
+    }
+    for name in [
+        "manifest_file_count",
+        "manifest_file_size",
+        "data_file_count",
+        "data_file_size",
+        "index_file_count",
+        "index_file_size",
+    ] {
+        fields.push(f(name, TableDataType::Number(NumberDataType::Int64)));
+    }
+    fields
+}
+
+pub async fn read_system_table(
+    kind: PaimonSystemTableKind,
+    _catalog: Arc<dyn paimon::Catalog>,
+    _identifier: paimon::catalog::Identifier,
+    _table: paimon::Table,
+) -> Result<DataBlock> {
+    Err(ErrorCode::Unimplemented(format!(
+        "Paimon system table {kind:?} is not implemented"
+    )))
+}
