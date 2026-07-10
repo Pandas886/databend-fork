@@ -10,6 +10,9 @@ default
 information_schema
 regression
 system
+===== catalog tables =====
+append_t
+pk_t
 ===== fully-qualified resolution (catalog -> db -> table) =====
 4
 ===== read-only DDL rejected (database level) =====
