@@ -26,15 +26,20 @@ use databend_common_expression::types::StringType;
 use databend_common_expression::types::TimestampType;
 use paimon::spec::DataFileMeta;
 
+use super::decode_key;
+use super::decode_stats_json;
 use super::format_partition;
 use super::json;
 use super::partition_fields;
+use super::trimmed_key_columns;
+use super::value_stats_columns;
 use crate::error::map_paimon_result;
 
 pub async fn read(table: &paimon::Table) -> Result<DataBlock> {
     let read_builder = table.new_read_builder();
     let plan = map_paimon_result(read_builder.new_scan().plan().await)?;
     let part_fields = partition_fields(table)?;
+    let key_columns = trimmed_key_columns(table);
     let field_names: Vec<String> = table
         .schema()
         .fields()
@@ -85,14 +90,22 @@ pub async fn read(table: &paimon::Table) -> Result<DataBlock> {
             level.push(file.level);
             record_count.push(file.row_count);
             file_size.push(file.file_size);
-            min_key.push(binary_key(&file.min_key));
-            max_key.push(binary_key(&file.max_key));
+            min_key.push(decode_key(&file.min_key, &key_columns));
+            max_key.push(decode_key(&file.max_key, &key_columns));
             null_value_counts.push(null_value_counts_json(file, &field_names)?);
-            // TODO: decode `value_stats` min/max BinaryRow into typed JSON. The
-            // stats are encoded as schema-typed BinaryRows; until that decoding
-            // lands we emit an empty object rather than guess a format.
-            min_value_stats.push("{}".to_string());
-            max_value_stats.push("{}".to_string());
+            let stats_columns = value_stats_columns(
+                table,
+                file.value_stats_cols.as_ref(),
+                file.write_cols.as_ref(),
+            );
+            min_value_stats.push(
+                decode_stats_json(file.value_stats.min_values(), &stats_columns)?
+                    .unwrap_or_else(|| "{}".to_string()),
+            );
+            max_value_stats.push(
+                decode_stats_json(file.value_stats.max_values(), &stats_columns)?
+                    .unwrap_or_else(|| "{}".to_string()),
+            );
             min_sequence_number.push(Some(file.min_sequence_number));
             max_sequence_number.push(Some(file.max_sequence_number));
             creation_time.push(file.creation_time.map(|time| time.timestamp_micros()));
@@ -143,14 +156,6 @@ fn file_format_of(file_name: &str) -> String {
         .rsplit_once('.')
         .map(|(_, ext)| ext.to_ascii_lowercase())
         .unwrap_or_else(|| "parquet".to_string())
-}
-
-fn binary_key(key: &[u8]) -> Option<String> {
-    if key.is_empty() {
-        None
-    } else {
-        Some(key.iter().map(|byte| format!("{byte:02x}")).collect())
-    }
 }
 
 fn file_source_name(source: i32) -> String {
