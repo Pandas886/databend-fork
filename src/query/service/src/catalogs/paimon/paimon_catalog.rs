@@ -12,7 +12,4 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub const CATALOG_DEFAULT: &str = "default";
-pub const CATALOG_HIVE: &str = "hive";
-pub const CATALOG_ICEBERG: &str = "iceberg";
-pub const CATALOG_PAIMON: &str = "paimon";
+pub use databend_common_storages_paimon::PaimonCreator;
