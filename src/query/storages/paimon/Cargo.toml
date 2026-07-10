@@ -59,5 +59,9 @@ path = "tests/security.rs"
 name = "system_tables"
 path = "tests/system_tables.rs"
 
+[[test]]
+name = "write_router"
+path = "tests/write_router.rs"
+
 [lints]
 workspace = true

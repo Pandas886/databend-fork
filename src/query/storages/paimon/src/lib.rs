@@ -20,6 +20,7 @@ mod predicate;
 mod source;
 mod system;
 mod table;
+mod write;
 
 pub use catalog::PaimonCatalog;
 pub use catalog::PaimonCreator;
@@ -42,5 +43,6 @@ pub use system::read_system_table;
 pub use table::PAIMON_ENGINE;
 pub use table::PaimonTable;
 pub use table::PaimonTableDescriptor;
+pub use write::*;
 
 pub const PAIMON_CATALOG: &str = "paimon";
