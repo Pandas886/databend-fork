@@ -25,8 +25,10 @@ use arrow_schema::Schema as ArrowSchema;
 use chrono::DateTime;
 use chrono::Utc;
 use common::TestWarehouse;
+use common::databend_table;
 use common::filesystem_catalog;
 use databend_common_base::base::Progress;
+use databend_common_catalog::table::Table;
 use databend_common_expression::DataBlock;
 use databend_common_expression::DataField;
 use databend_common_expression::DataSchema;
@@ -36,6 +38,7 @@ use databend_common_pipeline::sinks::AsyncSink;
 use databend_common_pipeline_transforms::AsyncAccumulatingTransform;
 use databend_common_storages_paimon::PaimonCommitMeta;
 use databend_common_storages_paimon::PaimonCommitSink;
+use databend_common_storages_paimon::PaimonTable;
 use databend_common_storages_paimon::PaimonTableWriter;
 use futures::StreamExt;
 use paimon::Catalog;
@@ -48,6 +51,56 @@ use paimon::spec::IntType;
 use paimon::spec::Schema;
 use paimon::spec::VarCharType;
 use paimon::table::CommitMessage;
+
+#[tokio::test]
+async fn test_write_support_matrix() {
+    let wh = TestWarehouse::new();
+    let catalog = filesystem_catalog(&wh.warehouse);
+    catalog
+        .create_database("db", false, Default::default())
+        .await
+        .expect("create db");
+
+    let append_id = create_matrix_table(&catalog, "append_t", MatrixKind::Append).await;
+    let fixed_id = create_matrix_table(&catalog, "fixed_pk", MatrixKind::FixedPk).await;
+    let dynamic_id = create_matrix_table(&catalog, "dynamic_pk", MatrixKind::DynamicPk).await;
+    let postpone_id = create_matrix_table(&catalog, "postpone_pk", MatrixKind::PostponePk).await;
+
+    let append = databend_table(&wh.warehouse, &append_id).await;
+    let fixed = databend_table(&wh.warehouse, &fixed_id).await;
+    let dynamic = databend_table(&wh.warehouse, &dynamic_id).await;
+    let postpone = databend_table(&wh.warehouse, &postpone_id).await;
+
+    let append_table = as_paimon(append.as_ref());
+    let fixed_pk_table = as_paimon(fixed.as_ref());
+    let dynamic_pk_table = as_paimon(dynamic.as_ref());
+    let postpone_pk_table = as_paimon(postpone.as_ref());
+
+    assert!(append_table.support_distributed_insert());
+    assert!(append_table.validate_insert(false).is_ok());
+    assert!(fixed_pk_table.validate_insert(false).is_ok());
+    assert!(
+        dynamic_pk_table
+            .validate_insert(false)
+            .unwrap_err()
+            .message()
+            .contains("dynamic bucket")
+    );
+    assert!(
+        postpone_pk_table
+            .validate_insert(false)
+            .unwrap_err()
+            .message()
+            .contains("postpone bucket")
+    );
+    assert!(
+        fixed_pk_table
+            .validate_insert(true)
+            .unwrap_err()
+            .message()
+            .contains("overwrite")
+    );
+}
 
 #[test]
 fn test_commit_meta_round_trip() {
@@ -327,4 +380,41 @@ async fn read_all_rows(
         }
     }
     Ok(rows)
+}
+
+enum MatrixKind {
+    Append,
+    FixedPk,
+    DynamicPk,
+    PostponePk,
+}
+
+async fn create_matrix_table(
+    catalog: &paimon::FileSystemCatalog,
+    name: &str,
+    kind: MatrixKind,
+) -> Identifier {
+    let mut builder = Schema::builder()
+        .column("id", PaimonDataType::Int(IntType::new()))
+        .column("value", PaimonDataType::VarChar(VarCharType::string_type()));
+    builder = match kind {
+        MatrixKind::Append => builder,
+        MatrixKind::FixedPk => builder.primary_key(["id"]).option("bucket", "1"),
+        MatrixKind::DynamicPk => builder.primary_key(["id"]).option("bucket", "-1"),
+        MatrixKind::PostponePk => builder.primary_key(["id"]).option("bucket", "-2"),
+    };
+    let schema = builder.build().expect("schema");
+    let identifier = Identifier::new("db", name);
+    catalog
+        .create_table(&identifier, schema, false)
+        .await
+        .expect("create table");
+    identifier
+}
+
+fn as_paimon(table: &dyn Table) -> &PaimonTable {
+    table
+        .as_any()
+        .downcast_ref::<PaimonTable>()
+        .expect("paimon table")
 }
