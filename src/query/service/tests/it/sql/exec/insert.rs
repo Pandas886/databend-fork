@@ -116,48 +116,39 @@ fn format_plan(plan: &PhysicalPlan) -> String {
     format!("{plan:?}")
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn test_paimon_write_route_plan() -> databend_common_exception::Result<()> {
-    let warehouse = TestWarehouse::new();
-    let (pk_id, append_id) = setup_tables(&warehouse.warehouse).await;
+fn wrap_with_merge_exchange(input: PhysicalPlan) -> PhysicalPlan {
+    PhysicalPlan::new(Exchange {
+        input,
+        kind: FragmentKind::Merge,
+        keys: vec![],
+        allow_adjust_parallelism: true,
+        ignore_exchange: false,
+        meta: PhysicalPlanMeta::new("Exchange"),
+    })
+}
 
-    let pk_table = databend_table(&warehouse.warehouse, &pk_id).await;
-    let (pk_select, pk_bindings) = dummy_select_plan(3);
-    let pk_schema = pk_select.output_schema()?;
-    let pk_plan = build_insert_select_physical_plan(
-        pk_select,
-        pk_schema.clone(),
-        pk_bindings,
-        pk_schema,
-        pk_table,
-        false,
-        TableMetaTimestamps::new(None, Duration::hours(1)),
-    )?;
-    let pk_text = format_plan(&pk_plan);
+fn assert_pk_write_route_shape(plan: &PhysicalPlan) {
+    let plan_text = format_plan(plan);
     assert!(
-        pk_text.contains("PaimonWriteRoute"),
-        "pk plan missing PaimonWriteRoute:\n{pk_text}"
+        plan_text.contains("PaimonWriteRoute"),
+        "pk plan missing PaimonWriteRoute:\n{plan_text}"
     );
     assert!(
-        pk_text.contains("Exchange"),
-        "pk plan missing Exchange:\n{pk_text}"
+        plan_text.contains("GlobalShuffle"),
+        "pk plan missing GlobalShuffle:\n{plan_text}"
     );
     assert!(
-        pk_text.contains("GlobalShuffle"),
-        "pk plan missing GlobalShuffle:\n{pk_text}"
+        plan_text.contains("Merge"),
+        "pk plan missing Merge Exchange for commit gather:\n{plan_text}"
     );
     assert!(
-        pk_text.contains("Merge"),
-        "pk plan missing Merge Exchange for commit gather:\n{pk_text}"
-    );
-    assert!(
-        pk_text.contains("DistributedInsertSelect"),
-        "pk plan missing DistributedInsertSelect:\n{pk_text}"
+        plan_text.contains("DistributedInsertSelect"),
+        "pk plan missing DistributedInsertSelect:\n{plan_text}"
     );
 
     // Merge → DistributedInsertSelect → GlobalShuffle → PaimonWriteRoute
-    let outer = Exchange::from_physical_plan(&pk_plan)
-        .expect("pk plan must start with Merge Exchange");
+    let outer =
+        Exchange::from_physical_plan(plan).expect("pk plan must start with Merge Exchange");
     assert_eq!(outer.kind, FragmentKind::Merge);
     let insert = DistributedInsertSelect::from_physical_plan(&outer.input)
         .expect("Merge must wrap DistributedInsertSelect");
@@ -172,6 +163,27 @@ async fn test_paimon_write_route_plan() -> databend_common_exception::Result<()>
         PaimonWriteRoute::from_physical_plan(&shuffle.input).is_some(),
         "GlobalShuffle must wrap PaimonWriteRoute"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_paimon_write_route_plan() -> databend_common_exception::Result<()> {
+    let warehouse = TestWarehouse::new();
+    let (pk_id, append_id) = setup_tables(&warehouse.warehouse).await;
+
+    // Local / VALUES path: no top Merge on select → synthesize outer Merge.
+    let pk_table = databend_table(&warehouse.warehouse, &pk_id).await;
+    let (pk_select, pk_bindings) = dummy_select_plan(3);
+    let pk_schema = pk_select.output_schema()?;
+    let pk_plan = build_insert_select_physical_plan(
+        pk_select,
+        pk_schema.clone(),
+        pk_bindings,
+        pk_schema,
+        pk_table,
+        false,
+        TableMetaTimestamps::new(None, Duration::hours(1)),
+    )?;
+    assert_pk_write_route_shape(&pk_plan);
 
     let append_table = databend_table(&warehouse.warehouse, &append_id).await;
     let (append_select, append_bindings) = dummy_select_plan(2);
@@ -193,6 +205,67 @@ async fn test_paimon_write_route_plan() -> databend_common_exception::Result<()>
     assert!(
         append_text.contains("DistributedInsertSelect"),
         "append plan missing DistributedInsertSelect:\n{append_text}"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_paimon_write_route_plan_preserves_select_merge()
+-> databend_common_exception::Result<()> {
+    let warehouse = TestWarehouse::new();
+    let (pk_id, append_id) = setup_tables(&warehouse.warehouse).await;
+
+    // SELECT path: select already has top Merge → must keep it via exchange.derive.
+    let pk_table = databend_table(&warehouse.warehouse, &pk_id).await;
+    let (pk_select, pk_bindings) = dummy_select_plan(3);
+    let pk_schema = pk_select.output_schema()?;
+    let pk_select_with_merge = wrap_with_merge_exchange(pk_select);
+    assert!(
+        Exchange::from_physical_plan(&pk_select_with_merge)
+            .is_some_and(|e| e.kind == FragmentKind::Merge),
+        "precondition: select must start with Merge Exchange"
+    );
+
+    let pk_plan = build_insert_select_physical_plan(
+        pk_select_with_merge,
+        pk_schema.clone(),
+        pk_bindings,
+        pk_schema,
+        pk_table,
+        false,
+        TableMetaTimestamps::new(None, Duration::hours(1)),
+    )?;
+    assert_pk_write_route_shape(&pk_plan);
+
+    // Append with top Merge: keep Merge, still no PaimonWriteRoute / GlobalShuffle.
+    let append_table = databend_table(&warehouse.warehouse, &append_id).await;
+    let (append_select, append_bindings) = dummy_select_plan(2);
+    let append_schema = append_select.output_schema()?;
+    let append_plan = build_insert_select_physical_plan(
+        wrap_with_merge_exchange(append_select),
+        append_schema.clone(),
+        append_bindings,
+        append_schema,
+        append_table,
+        false,
+        TableMetaTimestamps::new(None, Duration::hours(1)),
+    )?;
+    let append_text = format_plan(&append_plan);
+    assert!(
+        !append_text.contains("PaimonWriteRoute"),
+        "append plan must not contain PaimonWriteRoute:\n{append_text}"
+    );
+    assert!(
+        !append_text.contains("GlobalShuffle"),
+        "append plan must not force GlobalShuffle:\n{append_text}"
+    );
+    let outer = Exchange::from_physical_plan(&append_plan)
+        .expect("append with select Merge must keep outer Exchange");
+    assert_eq!(outer.kind, FragmentKind::Merge);
+    assert!(
+        DistributedInsertSelect::from_physical_plan(&outer.input).is_some(),
+        "append Merge must wrap DistributedInsertSelect"
     );
 
     Ok(())
