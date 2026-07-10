@@ -18,6 +18,7 @@ mod error;
 mod partition;
 mod predicate;
 mod source;
+mod system;
 mod table;
 
 pub use catalog::PaimonCatalog;
@@ -33,6 +34,9 @@ pub use predicate::projection_column_names;
 pub use source::reset_table_load_count_for_test;
 #[doc(hidden)]
 pub use source::table_load_count_for_test;
+pub use system::PaimonSystemTableKind;
+pub use system::ParsedName;
+pub use system::parse_system_name;
 pub use table::PAIMON_ENGINE;
 pub use table::PaimonTable;
 pub use table::PaimonTableDescriptor;
