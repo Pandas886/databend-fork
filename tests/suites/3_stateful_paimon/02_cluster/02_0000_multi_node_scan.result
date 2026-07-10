@@ -1,3 +1,6 @@
+===== row count from at least four splits =====
 true
-partitions=4
-distinct_paimon_nodes=2
+===== active cluster nodes: 3 =====
+===== distributed scan plan =====
+distributed_scan=true
+partitions total: 4
