@@ -66,6 +66,7 @@ use crate::physical_plans::DistributedInsertSelect;
 use crate::physical_plans::Exchange;
 use crate::physical_plans::IPhysicalPlan;
 use crate::physical_plans::PAIMON_ROUTE_KEY_NAME;
+use crate::physical_plans::PaimonWritePrepare;
 use crate::physical_plans::PaimonWriteRoute;
 use crate::physical_plans::PhysicalPlan;
 use crate::physical_plans::PhysicalPlanBuilder;
@@ -133,10 +134,27 @@ pub fn build_insert_select_physical_plan(
     let table_info = table.get_table_info().clone();
     let needs_pk_route = is_fixed_bucket_primary_key(&table)?;
 
+    let prepare_and_route = |input: PhysicalPlan| -> Result<PhysicalPlan> {
+        let prepared = PhysicalPlan::new(PaimonWritePrepare {
+            meta: PhysicalPlanMeta::new("PaimonWritePrepare"),
+            input,
+            table_info: table_info.clone(),
+            insert_schema: insert_schema.clone(),
+            select_schema: select_schema.clone(),
+            select_column_bindings: select_column_bindings.clone(),
+            cast_needed,
+        });
+        wrap_paimon_write_distribution(prepared, table.clone())
+    };
+
     if table.support_distributed_insert()
         && let Some(exchange) = Exchange::from_physical_plan(&select_plan)
     {
-        let input = wrap_paimon_write_distribution(exchange.input.clone(), table.clone())?;
+        let input = if needs_pk_route {
+            prepare_and_route(exchange.input.clone())?
+        } else {
+            exchange.input.clone()
+        };
         let insert = PhysicalPlan::new(DistributedInsertSelect {
             input,
             table_info,
@@ -144,6 +162,7 @@ pub fn build_insert_select_physical_plan(
             select_column_bindings,
             insert_schema,
             cast_needed,
+            input_prepared: needs_pk_route,
             table_meta_timestamps,
             meta: PhysicalPlanMeta::new("DistributedInsertSelect"),
         });
@@ -151,7 +170,11 @@ pub fn build_insert_select_physical_plan(
         // GlobalShuffle for PK route lives inside `insert.input`.
         Ok(exchange.derive(vec![insert]))
     } else {
-        let input = wrap_paimon_write_distribution(select_plan, table)?;
+        let input = if needs_pk_route {
+            prepare_and_route(select_plan)?
+        } else {
+            select_plan
+        };
         let insert = PhysicalPlan::new(DistributedInsertSelect {
             input,
             table_info,
@@ -159,6 +182,7 @@ pub fn build_insert_select_physical_plan(
             select_column_bindings,
             insert_schema,
             cast_needed,
+            input_prepared: needs_pk_route,
             table_meta_timestamps,
             meta: PhysicalPlanMeta::new("DistributedInsertSelect"),
         });

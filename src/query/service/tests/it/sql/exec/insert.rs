@@ -27,6 +27,7 @@ use databend_query::interpreters::build_insert_select_physical_plan;
 use databend_query::physical_plans::ConstantTableScan;
 use databend_query::physical_plans::DistributedInsertSelect;
 use databend_query::physical_plans::Exchange;
+use databend_query::physical_plans::PaimonWritePrepare;
 use databend_query::physical_plans::PaimonWriteRoute;
 use databend_query::physical_plans::PhysicalPlan;
 use databend_query::physical_plans::PhysicalPlanCast;
@@ -153,9 +154,15 @@ fn assert_pk_write_route_shape(plan: &PhysicalPlan) {
         !shuffle.allow_adjust_parallelism,
         "GlobalShuffle must keep allow_adjust_parallelism=false"
     );
+    let route = PaimonWriteRoute::from_physical_plan(&shuffle.input)
+        .expect("GlobalShuffle must wrap PaimonWriteRoute");
     assert!(
-        PaimonWriteRoute::from_physical_plan(&shuffle.input).is_some(),
-        "GlobalShuffle must wrap PaimonWriteRoute"
+        PaimonWritePrepare::from_physical_plan(&route.input).is_some(),
+        "route input must be cast/fill/reorder prepared"
+    );
+    assert!(
+        insert.input_prepared,
+        "insert must not prepare routed data again"
     );
 }
 

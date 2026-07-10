@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -28,10 +29,29 @@ use paimon::table::CommitMessage;
 use crate::error::map_paimon_error;
 use crate::write::meta::PaimonCommitMeta;
 
+fn merge_route_owners(
+    owners: &mut HashMap<Vec<u8>, (String, u64)>,
+    incoming: &[(Vec<u8>, String, u64)],
+) -> Result<()> {
+    for (route, executor, lane) in incoming {
+        if let Some((previous_executor, previous_lane)) = owners.get(route) {
+            if previous_executor != executor || previous_lane != lane {
+                return Err(ErrorCode::Internal(format!(
+                    "Paimon route key mapped to multiple writer lanes: executor={previous_executor}/{executor}, lane={previous_lane}/{lane}"
+                )));
+            }
+        } else {
+            owners.insert(route.clone(), (executor.clone(), *lane));
+        }
+    }
+    Ok(())
+}
+
 /// Coordinator sink that collects writer commit metas and submits one snapshot.
 pub struct PaimonCommitSink {
     table: paimon::Table,
     messages: Vec<CommitMessage>,
+    route_owners: HashMap<Vec<u8>, (String, u64)>,
 }
 
 impl PaimonCommitSink {
@@ -39,6 +59,7 @@ impl PaimonCommitSink {
         Self {
             table,
             messages: Vec::new(),
+            route_owners: HashMap::new(),
         }
     }
 
@@ -61,6 +82,7 @@ impl AsyncSink for PaimonCommitSink {
         if let Some(meta) = block.get_meta() {
             let meta = PaimonCommitMeta::downcast_ref_from(meta)
                 .ok_or_else(|| ErrorCode::Internal("invalid Paimon commit meta".to_string()))?;
+            merge_route_owners(&mut self.route_owners, &meta.route_owners)?;
             self.messages.extend(meta.clone().into_messages()?);
         }
         Ok(false)
@@ -76,5 +98,19 @@ impl AsyncSink for PaimonCommitSink {
             .commit(std::mem::take(&mut self.messages))
             .await
             .map_err(map_paimon_error)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_merge_route_owners_rejects_cross_executor_conflict() {
+        let mut owners = HashMap::new();
+        merge_route_owners(&mut owners, &[(vec![1], "node-a".to_string(), 1)]).unwrap();
+        let err = merge_route_owners(&mut owners, &[(vec![1], "node-b".to_string(), 2)])
+            .expect_err("same route on another writer must fail");
+        assert!(err.message().contains("multiple writer lanes"));
     }
 }

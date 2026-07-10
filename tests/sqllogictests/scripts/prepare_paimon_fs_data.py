@@ -45,30 +45,15 @@ def _spark_table_rows(table: str):
     return spark.sql(f"SELECT * FROM paimon.regression.{table}").collect()
 
 
-def _assert_unpartitioned_or_snapshot(table: str, expect_rows: int) -> None:
-    """Spark currently BufferUnderflowException-reads some unpartitioned Databend writes.
-
-    Fall back to confirming a committed snapshot exists; Databend sqllogictest already
-    checked row contents for these tables.
-    """
-    try:
-        rows = _spark_table_rows(table)
-    except Exception as exc:  # noqa: BLE001 - surface Spark Java errors
-        if "BufferUnderflowException" not in str(exc):
-            raise
-        latest = Path(warehouse) / "regression.db" / table / "snapshot" / "LATEST"
-        assert latest.is_file(), f"{table}: Spark read failed and snapshot/LATEST missing"
-        print(
-            f"WARN: Spark cannot read {table} (BufferUnderflowException); "
-            f"snapshot present (Databend e2e already checked {expect_rows} rows)"
-        )
-        return
+def _assert_table_rows(table: str, expect_rows: int) -> None:
+    """Require the official Paimon reader to read every Databend-written table."""
+    rows = _spark_table_rows(table)
     assert len(rows) == expect_rows, f"{table} expected {expect_rows} rows, got {len(rows)}"
 
 
 def verify_databend_writes() -> None:
     """Assert row counts and primary-key finals after Databend e2e writes."""
-    _assert_unpartitioned_or_snapshot("write_append", 10)
+    _assert_table_rows("write_append", 10)
 
     append_part_count = spark.sql(
         "SELECT count(*) AS c FROM paimon.regression.write_append_part"
@@ -77,18 +62,13 @@ def verify_databend_writes() -> None:
         f"write_append_part expected 4 rows, got {append_part_count}"
     )
 
-    try:
-        pk_rows = {
-            (r["id"], r["value"])
-            for r in spark.sql(
-                "SELECT id, value FROM paimon.regression.write_pk"
-            ).collect()
-        }
-        assert pk_rows == {(1, "new"), (2, "x")}, f"write_pk unexpected rows: {pk_rows}"
-    except Exception as exc:  # noqa: BLE001
-        if "BufferUnderflowException" not in str(exc):
-            raise
-        _assert_unpartitioned_or_snapshot("write_pk", 2)
+    pk_rows = {
+        (r["id"], r["value"])
+        for r in spark.sql(
+            "SELECT id, value FROM paimon.regression.write_pk"
+        ).collect()
+    }
+    assert pk_rows == {(1, "new"), (2, "x")}, f"write_pk unexpected rows: {pk_rows}"
 
     pk_part_rows = {
         (r["id"], r["value"], r["part"])

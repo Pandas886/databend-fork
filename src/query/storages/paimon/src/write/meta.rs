@@ -31,6 +31,8 @@ use serde::Serialize;
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct PaimonCommitMeta {
     pub messages_json: Vec<String>,
+    #[serde(default)]
+    pub route_owners: Vec<(Vec<u8>, String, u64)>,
 }
 
 #[typetag::serde(name = "paimon_commit_meta")]
@@ -54,7 +56,10 @@ impl PaimonCommitMeta {
                 })?;
             messages_json.push(json);
         }
-        Ok(Self { messages_json })
+        Ok(Self {
+            messages_json,
+            route_owners: Vec::new(),
+        })
     }
 
     pub fn into_messages(self) -> Result<Vec<CommitMessage>> {
