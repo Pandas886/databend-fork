@@ -31,9 +31,12 @@ mod files;
 mod manifests;
 mod options;
 mod partitions;
+mod physical_files_size;
+mod referenced_files_size;
 mod schemas;
 mod snapshots;
 mod table;
+mod table_indexes;
 mod tags;
 
 pub use table::PaimonSystemTable;
@@ -293,9 +296,9 @@ pub async fn read_system_table(
         PaimonSystemTableKind::Files => files::read(&table).await,
         PaimonSystemTableKind::Manifests => manifests::read(&table).await,
         PaimonSystemTableKind::Partitions => partitions::read(catalog, &identifier, &table).await,
-        _ => Err(ErrorCode::Unimplemented(format!(
-            "Paimon system table {kind:?} is not implemented"
-        ))),
+        PaimonSystemTableKind::PhysicalFilesSize => physical_files_size::read(&table).await,
+        PaimonSystemTableKind::ReferencedFilesSize => referenced_files_size::read(&table).await,
+        PaimonSystemTableKind::TableIndexes => table_indexes::read(&table).await,
     }
 }
 

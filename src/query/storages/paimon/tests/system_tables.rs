@@ -26,6 +26,7 @@ use databend_common_expression::DataBlock;
 use databend_common_expression::ScalarRef;
 use databend_common_expression::Value;
 use databend_common_expression::types::NumberColumn;
+use databend_common_expression::types::NumberScalar;
 use databend_common_storages_paimon::PaimonSystemTableKind;
 use databend_common_storages_paimon::read_system_table;
 use paimon::Catalog;
@@ -40,6 +41,18 @@ fn string_column(block: &DataBlock, offset: usize) -> Vec<Option<String>> {
             other => panic!("expected string scalar, got {other:?}"),
         })
         .collect()
+}
+
+/// Reads a non-null `Int64` cell.
+fn int64_at(block: &DataBlock, offset: usize, row: usize) -> i64 {
+    match block
+        .get_by_offset(offset)
+        .index(row)
+        .expect("row in range")
+    {
+        ScalarRef::Number(NumberScalar::Int64(value)) => value,
+        other => panic!("expected int64 scalar, got {other:?}"),
+    }
 }
 
 #[tokio::test]
@@ -172,4 +185,71 @@ async fn files_manifests_partitions() {
             Some("[3]".to_string()),
         ])
     );
+}
+
+#[tokio::test]
+async fn size_and_indexes() {
+    let warehouse = TestWarehouse::new();
+    let identifier = setup_multi_split_append_table(&warehouse.warehouse).await;
+    let catalog = Arc::new(filesystem_catalog(&warehouse.warehouse));
+    let table = catalog.get_table(&identifier).await.expect("get table");
+
+    let physical = read_system_table(
+        PaimonSystemTableKind::PhysicalFilesSize,
+        catalog.clone(),
+        identifier.clone(),
+        table.clone(),
+    )
+    .await
+    .expect("read physical_files_size");
+    assert_eq!(
+        physical.num_columns(),
+        PaimonSystemTableKind::PhysicalFilesSize
+            .schema()
+            .num_fields()
+    );
+    assert_eq!(physical.num_rows(), 1);
+    // Four commits produce manifest and data files on disk.
+    assert!(int64_at(&physical, 0, 0) > 0, "manifest_file_count");
+    assert!(int64_at(&physical, 2, 0) > 0, "data_file_count");
+
+    let referenced = read_system_table(
+        PaimonSystemTableKind::ReferencedFilesSize,
+        catalog.clone(),
+        identifier.clone(),
+        table.clone(),
+    )
+    .await
+    .expect("read referenced_files_size");
+    assert_eq!(
+        referenced.num_columns(),
+        PaimonSystemTableKind::ReferencedFilesSize
+            .schema()
+            .num_fields()
+    );
+    assert!(referenced.num_rows() > 0);
+    // Rows are ordered by source, and at least one source references data files.
+    let sources: Vec<Option<String>> = string_column(&referenced, 0);
+    let mut sorted = sources.clone();
+    sorted.sort();
+    assert_eq!(sources, sorted, "referenced rows sorted by source");
+    assert!(
+        (0..referenced.num_rows()).any(|row| int64_at(&referenced, 3, row) > 0),
+        "some source references data files"
+    );
+
+    let indexes = read_system_table(
+        PaimonSystemTableKind::TableIndexes,
+        catalog,
+        identifier,
+        table,
+    )
+    .await
+    .expect("read table_indexes");
+    assert_eq!(
+        indexes.num_columns(),
+        PaimonSystemTableKind::TableIndexes.schema().num_fields()
+    );
+    // The Rust append writer produces no deletion-vector/index files.
+    assert_eq!(indexes.num_rows(), 0);
 }
