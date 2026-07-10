@@ -53,6 +53,9 @@ impl PaimonCommitSink {
 #[async_trait]
 impl AsyncSink for PaimonCommitSink {
     const NAME: &'static str = "PaimonCommitSink";
+    // Match Fuse multi_table_insert_commit: on pipeline abort after partial
+    // consume, do not call on_finish() — otherwise we would still commit.
+    const CALL_ON_FINISH_ON_ERROR: bool = false;
 
     async fn consume(&mut self, block: DataBlock) -> Result<bool> {
         if let Some(meta) = block.get_meta() {
