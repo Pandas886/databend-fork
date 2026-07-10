@@ -29,17 +29,55 @@ use paimon::table::TableWrite;
 use crate::error::map_paimon_error;
 use crate::write::meta::PaimonCommitMeta;
 
+#[cfg(any(test, debug_assertions))]
+use std::collections::HashSet;
+#[cfg(any(test, debug_assertions))]
+use crate::write::router::PaimonWriteRouter;
+#[cfg(any(test, debug_assertions))]
+use crate::write::router::next_lane_id_for_test;
+#[cfg(any(test, debug_assertions))]
+use crate::write::router::observe_route_lane;
+
 /// Transform that writes DataBlocks into a Paimon `TableWrite` and emits
 /// serializable commit meta on finish.
 pub struct PaimonTableWriter {
     write_progress: Arc<Progress>,
     writer: TableWrite,
     arrow_schema: Arc<ArrowSchema>,
+    #[cfg(any(test, debug_assertions))]
+    observe: Option<LaneObserveCtx>,
+}
+
+#[cfg(any(test, debug_assertions))]
+struct LaneObserveCtx {
+    query_id: String,
+    executor_id: String,
+    lane_id: u64,
+    router: PaimonWriteRouter,
 }
 
 impl PaimonTableWriter {
     pub fn try_create(ctx: Arc<dyn TableContext>, table: paimon::Table) -> Result<Self> {
-        Self::try_create_with_progress(ctx.get_write_progress(), table)
+        #[cfg(any(test, debug_assertions))]
+        {
+            let observe = if is_fixed_bucket_primary_key_table(&table) {
+                Some(LaneObserveCtx {
+                    query_id: ctx.get_id(),
+                    executor_id: ctx.get_cluster().local_id.clone(),
+                    lane_id: next_lane_id_for_test(),
+                    router: PaimonWriteRouter::try_create(table.schema())?,
+                })
+            } else {
+                None
+            };
+            let mut writer = Self::try_create_with_progress(ctx.get_write_progress(), table)?;
+            writer.observe = observe;
+            Ok(writer)
+        }
+        #[cfg(not(any(test, debug_assertions)))]
+        {
+            Self::try_create_with_progress(ctx.get_write_progress(), table)
+        }
     }
 
     /// Test/helper constructor that avoids requiring a full `TableContext`.
@@ -57,8 +95,40 @@ impl PaimonTableWriter {
             write_progress,
             writer,
             arrow_schema,
+            #[cfg(any(test, debug_assertions))]
+            observe: None,
         })
     }
+
+    #[cfg(any(test, debug_assertions))]
+    fn observe_routes(&self, batch: &RecordBatch) -> Result<()> {
+        let Some(observe) = self.observe.as_ref() else {
+            return Ok(());
+        };
+        let routes = observe.router.route_batch(batch)?;
+        let mut seen = HashSet::new();
+        for route in routes {
+            if !seen.insert(route.key.clone()) {
+                continue;
+            }
+            observe_route_lane(
+                &observe.query_id,
+                &route.key,
+                &observe.executor_id,
+                observe.lane_id,
+            )?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(any(test, debug_assertions))]
+fn is_fixed_bucket_primary_key_table(table: &paimon::Table) -> bool {
+    let schema = table.schema();
+    if schema.primary_keys().is_empty() {
+        return false;
+    }
+    paimon::spec::CoreOptions::new(schema.options()).bucket() >= 1
 }
 
 #[async_trait]
@@ -71,6 +141,8 @@ impl AsyncAccumulatingTransform for PaimonTableWriter {
         }
         let rows = block.num_rows();
         let batch = data_block_to_paimon_batch(block, &self.arrow_schema)?;
+        #[cfg(any(test, debug_assertions))]
+        self.observe_routes(&batch)?;
         self.writer
             .write_arrow_batch(&batch)
             .await

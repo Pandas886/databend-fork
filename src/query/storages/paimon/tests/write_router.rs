@@ -98,13 +98,31 @@ async fn test_router_matches_paimon_fixed_bucket_write() {
         .expect("write batch");
     let messages = table_write.prepare_commit().await.expect("prepare commit");
 
-    let router_set: HashSet<(Vec<u8>, i32)> = routes
+    let routed: HashSet<_> = routes
         .iter()
-        .map(|route| (route.partition.clone(), route.bucket))
+        .map(|r| (r.partition.clone(), r.bucket))
         .collect();
-    let write_set: HashSet<(Vec<u8>, i32)> = messages
+    let committed: HashSet<_> = messages
         .iter()
-        .map(|message| (message.partition.clone(), message.bucket))
+        .map(|m| (m.partition.clone(), m.bucket))
         .collect();
-    assert_eq!(router_set, write_set);
+    assert_eq!(routed, committed);
+}
+
+#[test]
+fn test_observe_route_lane_rejects_conflicting_lanes() {
+    use databend_common_storages_paimon::observe_route_lane;
+    use databend_common_storages_paimon::reset_lane_observations_for_test;
+
+    reset_lane_observations_for_test();
+    let key = encode_route_key(b"part", 1);
+    observe_route_lane("q1", &key, "exec-a", 1).expect("first observe");
+    observe_route_lane("q1", &key, "exec-a", 1).expect("same lane ok");
+    let err = observe_route_lane("q1", &key, "exec-a", 2).expect_err("different lane");
+    assert!(
+        err.message().contains("multiple writer lanes"),
+        "unexpected error: {err}"
+    );
+    // Different query may reuse the same route key.
+    observe_route_lane("q2", &key, "exec-b", 3).expect("other query ok");
 }
