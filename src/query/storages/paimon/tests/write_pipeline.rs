@@ -65,17 +65,21 @@ async fn test_write_support_matrix() {
     let fixed_id = create_matrix_table(&catalog, "fixed_pk", MatrixKind::FixedPk).await;
     let dynamic_id = create_matrix_table(&catalog, "dynamic_pk", MatrixKind::DynamicPk).await;
     let postpone_id = create_matrix_table(&catalog, "postpone_pk", MatrixKind::PostponePk).await;
+    let zero_id = create_matrix_table(&catalog, "zero_pk", MatrixKind::ZeroBucketPk).await;
 
     let append = databend_table(&wh.warehouse, &append_id).await;
     let fixed = databend_table(&wh.warehouse, &fixed_id).await;
     let dynamic = databend_table(&wh.warehouse, &dynamic_id).await;
     let postpone = databend_table(&wh.warehouse, &postpone_id).await;
+    let zero = databend_table(&wh.warehouse, &zero_id).await;
 
     let append_table = as_paimon(append.as_ref());
     let fixed_pk_table = as_paimon(fixed.as_ref());
     let dynamic_pk_table = as_paimon(dynamic.as_ref());
     let postpone_pk_table = as_paimon(postpone.as_ref());
+    let zero_pk_table = as_paimon(zero.as_ref());
 
+    assert!(!append_table.is_read_only());
     assert!(append_table.support_distributed_insert());
     assert!(append_table.validate_insert(false).is_ok());
     assert!(fixed_pk_table.validate_insert(false).is_ok());
@@ -100,6 +104,16 @@ async fn test_write_support_matrix() {
             .message()
             .contains("overwrite")
     );
+
+    let zero_err = zero_pk_table.validate_insert(false).unwrap_err().message();
+    assert!(zero_err.contains("bucket < 1"), "{zero_err}");
+    assert!(zero_err.contains("bucket=0"), "{zero_err}");
+    assert!(zero_err.contains("write_mode=insert"), "{zero_err}");
+    assert!(zero_err.contains("zero_pk"), "{zero_err}");
+
+    let overwrite_err = fixed_pk_table.validate_insert(true).unwrap_err().message();
+    assert!(overwrite_err.contains("write_mode=overwrite"), "{overwrite_err}");
+    assert!(overwrite_err.contains("fixed_pk"), "{overwrite_err}");
 }
 
 #[test]
@@ -387,6 +401,7 @@ enum MatrixKind {
     FixedPk,
     DynamicPk,
     PostponePk,
+    ZeroBucketPk,
 }
 
 async fn create_matrix_table(
@@ -402,6 +417,7 @@ async fn create_matrix_table(
         MatrixKind::FixedPk => builder.primary_key(["id"]).option("bucket", "1"),
         MatrixKind::DynamicPk => builder.primary_key(["id"]).option("bucket", "-1"),
         MatrixKind::PostponePk => builder.primary_key(["id"]).option("bucket", "-2"),
+        MatrixKind::ZeroBucketPk => builder.primary_key(["id"]).option("bucket", "0"),
     };
     let schema = builder.build().expect("schema");
     let identifier = Identifier::new("db", name);
