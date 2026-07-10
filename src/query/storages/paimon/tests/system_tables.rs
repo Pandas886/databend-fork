@@ -14,6 +14,7 @@
 
 mod common;
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use common::TestWarehouse;
@@ -21,11 +22,25 @@ use common::filesystem_catalog;
 use common::setup_metadata_table;
 use common::setup_multi_split_append_table;
 use databend_common_expression::Column;
+use databend_common_expression::DataBlock;
+use databend_common_expression::ScalarRef;
 use databend_common_expression::Value;
 use databend_common_expression::types::NumberColumn;
 use databend_common_storages_paimon::PaimonSystemTableKind;
 use databend_common_storages_paimon::read_system_table;
 use paimon::Catalog;
+
+/// Collects a string/nullable-string column as `Vec<Option<String>>`.
+fn string_column(block: &DataBlock, offset: usize) -> Vec<Option<String>> {
+    let entry = block.get_by_offset(offset);
+    (0..block.num_rows())
+        .map(|row| match entry.index(row).expect("row in range") {
+            ScalarRef::String(value) => Some(value.to_string()),
+            ScalarRef::Null => None,
+            other => panic!("expected string scalar, got {other:?}"),
+        })
+        .collect()
+}
 
 #[tokio::test]
 async fn simple_metadata() {
@@ -74,6 +89,27 @@ async fn files_manifests_partitions() {
     };
     assert_eq!(record_count, 4);
 
+    // One data file per partition; the partition column decodes the partition BinaryRow.
+    let partitions: BTreeSet<Option<String>> = string_column(&files, 0).into_iter().collect();
+    assert_eq!(
+        partitions,
+        BTreeSet::from([
+            Some("[0]".to_string()),
+            Some("[1]".to_string()),
+            Some("[2]".to_string()),
+            Some("[3]".to_string()),
+        ])
+    );
+    // Append-only table carries no trimmed primary key, so min/max_key stay null.
+    assert!(string_column(&files, 8).iter().all(Option::is_none));
+    assert!(string_column(&files, 9).iter().all(Option::is_none));
+    // The Rust append writer emits empty value stats, which decode to `{}`.
+    assert!(
+        string_column(&files, 11)
+            .iter()
+            .all(|value| value.as_deref() == Some("{}"))
+    );
+
     let manifests = read_system_table(
         PaimonSystemTableKind::Manifests,
         catalog.clone(),
@@ -87,6 +123,25 @@ async fn files_manifests_partitions() {
         PaimonSystemTableKind::Manifests.schema().num_fields()
     );
     assert!(manifests.num_rows() > 0);
+    // Manifest partition stats exercise the real BinaryTableStats decoder: each
+    // per-commit manifest covers a single partition, so min == max == {"part":k}.
+    let min_partition_stats: BTreeSet<Option<String>> =
+        string_column(&manifests, 5).into_iter().collect();
+    assert_eq!(
+        min_partition_stats,
+        BTreeSet::from([
+            Some("{\"part\":0}".to_string()),
+            Some("{\"part\":1}".to_string()),
+            Some("{\"part\":2}".to_string()),
+            Some("{\"part\":3}".to_string()),
+        ])
+    );
+    assert_eq!(
+        string_column(&manifests, 6)
+            .into_iter()
+            .collect::<BTreeSet<_>>(),
+        min_partition_stats
+    );
 
     let expected_partitions = catalog
         .list_partitions(&identifier)
@@ -106,4 +161,15 @@ async fn files_manifests_partitions() {
     );
     assert_eq!(partitions.num_rows(), expected_partitions.len());
     assert_eq!(partitions.num_rows(), 4);
+    assert_eq!(
+        string_column(&partitions, 0)
+            .into_iter()
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([
+            Some("[0]".to_string()),
+            Some("[1]".to_string()),
+            Some("[2]".to_string()),
+            Some("[3]".to_string()),
+        ])
+    );
 }

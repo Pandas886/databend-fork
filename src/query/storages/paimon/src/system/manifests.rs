@@ -21,6 +21,8 @@ use paimon::SnapshotManager;
 use paimon::spec::ManifestFileMeta;
 use paimon::spec::ManifestList;
 
+use super::decode_stats_json;
+use super::partition_fields;
 use crate::error::map_paimon_result;
 
 pub async fn read(table: &paimon::Table) -> Result<DataBlock> {
@@ -45,16 +47,28 @@ pub async fn read(table: &paimon::Table) -> Result<DataBlock> {
         None => Vec::new(),
     };
 
+    // `partition_stats` encode the manifest's partition-column min/max as a
+    // BinaryRow over the partition fields.
+    let partition_columns: Vec<(String, Option<paimon::spec::DataType>)> = partition_fields(table)?
+        .into_iter()
+        .map(|(name, data_type)| (name, Some(data_type)))
+        .collect();
+    let mut min_partition_stats = Vec::with_capacity(metas.len());
+    let mut max_partition_stats = Vec::with_capacity(metas.len());
+    for meta in &metas {
+        let stats = meta.partition_stats();
+        min_partition_stats.push(decode_stats_json(stats.min_values(), &partition_columns)?);
+        max_partition_stats.push(decode_stats_json(stats.max_values(), &partition_columns)?);
+    }
+
     Ok(DataBlock::new_from_columns(vec![
         StringType::from_data(metas.iter().map(|m| m.file_name()).collect()),
         Int64Type::from_data(metas.iter().map(|m| m.file_size()).collect()),
         Int64Type::from_data(metas.iter().map(|m| m.num_added_files()).collect()),
         Int64Type::from_data(metas.iter().map(|m| m.num_deleted_files()).collect()),
         Int64Type::from_data(metas.iter().map(|m| m.schema_id()).collect()),
-        // TODO: decode `partition_stats` min/max BinaryRow into typed JSON; left
-        // null until the shared stats decoder lands.
-        StringType::from_opt_data(metas.iter().map(|_| None::<String>).collect()),
-        StringType::from_opt_data(metas.iter().map(|_| None::<String>).collect()),
+        StringType::from_opt_data(min_partition_stats),
+        StringType::from_opt_data(max_partition_stats),
         Int64Type::from_opt_data(metas.iter().map(|m| m.min_row_id()).collect()),
         Int64Type::from_opt_data(metas.iter().map(|m| m.max_row_id()).collect()),
     ]))

@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use databend_common_exception::ErrorCode;
@@ -359,4 +360,127 @@ fn format_partition(
         }
     }
     Ok(Some(format!("[{}]", values.join(", "))))
+}
+
+/// Stats columns as (name, type) in stats-encoding order. Type is `None` when a
+/// stats column is absent from the current schema (then it decodes to null).
+type StatsColumns = Vec<(String, Option<paimon::spec::DataType>)>;
+
+/// Resolves the columns covered by a data file's `value_stats`, following the
+/// same precedence Paimon uses internally: `value_stats_cols`, then `write_cols`,
+/// then all schema fields in order.
+fn value_stats_columns(
+    table: &paimon::Table,
+    value_stats_cols: Option<&Vec<String>>,
+    write_cols: Option<&Vec<String>>,
+) -> StatsColumns {
+    let fields = table.schema().fields();
+    let names: Vec<String> = value_stats_cols.or(write_cols).cloned().unwrap_or_else(|| {
+        fields
+            .iter()
+            .map(|field| field.name().to_string())
+            .collect()
+    });
+    stats_columns_with_types(fields, names)
+}
+
+/// Trimmed primary-key columns (primary keys minus partition keys), used to
+/// decode a data file's `min_key`/`max_key`.
+fn trimmed_key_columns(table: &paimon::Table) -> StatsColumns {
+    let schema = table.schema();
+    let partition: HashSet<&str> = schema.partition_keys().iter().map(String::as_str).collect();
+    let names: Vec<String> = schema
+        .primary_keys()
+        .iter()
+        .filter(|key| !partition.contains(key.as_str()))
+        .cloned()
+        .collect();
+    stats_columns_with_types(schema.fields(), names)
+}
+
+fn stats_columns_with_types(
+    fields: &[paimon::spec::DataField],
+    names: Vec<String>,
+) -> StatsColumns {
+    names
+        .into_iter()
+        .map(|name| {
+            let data_type = fields
+                .iter()
+                .find(|field| field.name() == name)
+                .map(|field| field.data_type().clone());
+            (name, data_type)
+        })
+        .collect()
+}
+
+/// Decodes a serialized stats `BinaryRow` (min/max values of `BinaryTableStats`)
+/// into a `{column: value}` JSON object. Returns `None` when the stats are empty
+/// or cannot be decoded, matching Paimon's own fail-open stats handling.
+fn decode_stats_json(
+    bytes: &[u8],
+    columns: &[(String, Option<paimon::spec::DataType>)],
+) -> Result<Option<String>> {
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+    let Ok(row) = paimon::spec::BinaryRow::from_serialized_bytes(bytes) else {
+        return Ok(None);
+    };
+    let mut map = serde_json::Map::with_capacity(columns.len());
+    for (pos, (name, data_type)) in columns.iter().enumerate() {
+        let value = match data_type {
+            Some(data_type) => match row.get_datum(pos, data_type).ok().flatten() {
+                Some(datum) => datum_to_json(&datum),
+                None => serde_json::Value::Null,
+            },
+            None => serde_json::Value::Null,
+        };
+        map.insert(name.clone(), value);
+    }
+    json(&serde_json::Value::Object(map), "paimon stats").map(Some)
+}
+
+/// Decodes a serialized key `BinaryRow` (`min_key`/`max_key`) as `[v0, v1]`, or
+/// `None` when empty (e.g. append-only tables carry no trimmed primary key).
+fn decode_key(
+    bytes: &[u8],
+    columns: &[(String, Option<paimon::spec::DataType>)],
+) -> Option<String> {
+    if bytes.is_empty() || columns.is_empty() {
+        return None;
+    }
+    let row = paimon::spec::BinaryRow::from_serialized_bytes(bytes).ok()?;
+    let mut values = Vec::with_capacity(columns.len());
+    for (pos, (_name, data_type)) in columns.iter().enumerate() {
+        let rendered = match data_type {
+            Some(data_type) => match row.get_datum(pos, data_type).ok().flatten() {
+                Some(datum) => datum.to_string(),
+                None => "null".to_string(),
+            },
+            None => "null".to_string(),
+        };
+        values.push(rendered);
+    }
+    Some(format!("[{}]", values.join(", ")))
+}
+
+fn datum_to_json(datum: &paimon::spec::Datum) -> serde_json::Value {
+    use paimon::spec::Datum;
+    use serde_json::Value;
+    match datum {
+        Datum::Bool(v) => Value::Bool(*v),
+        Datum::TinyInt(v) => Value::from(*v),
+        Datum::SmallInt(v) => Value::from(*v),
+        Datum::Int(v) => Value::from(*v),
+        Datum::Long(v) => Value::from(*v),
+        Datum::Float(v) => serde_json::Number::from_f64(*v as f64)
+            .map(Value::Number)
+            .unwrap_or(Value::Null),
+        Datum::Double(v) => serde_json::Number::from_f64(*v)
+            .map(Value::Number)
+            .unwrap_or(Value::Null),
+        Datum::String(v) => Value::String(v.clone()),
+        other => Value::String(other.to_string()),
+    }
 }
