@@ -910,6 +910,7 @@ pub enum Engine {
     Random,
     Iceberg,
     Delta,
+    Paimon,
     Proxy,
 }
 
@@ -923,6 +924,7 @@ impl Display for Engine {
             Engine::Random => write!(f, "RANDOM"),
             Engine::Iceberg => write!(f, "ICEBERG"),
             Engine::Delta => write!(f, "DELTA"),
+            Engine::Paimon => write!(f, "PAIMON"),
             Engine::Proxy => write!(f, "PROXY"),
         }
     }
@@ -938,6 +940,7 @@ impl From<&str> for Engine {
             "random" => Engine::Random,
             "iceberg" => Engine::Iceberg,
             "delta" => Engine::Delta,
+            "paimon" => Engine::Paimon,
             "proxy" => Engine::Proxy,
             _ => unreachable!("invalid engine: {}", s),
         }

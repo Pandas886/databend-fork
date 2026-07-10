@@ -14,7 +14,9 @@
 
 mod common;
 
-use common::{filesystem_catalog, setup_append_table, TestWarehouse};
+use common::TestWarehouse;
+use common::filesystem_catalog;
+use common::setup_append_table;
 use databend_common_catalog::plan::PartInfo;
 use databend_common_storages_paimon::PaimonPartInfo;
 use databend_common_storages_paimon::SerializableDataSplit;

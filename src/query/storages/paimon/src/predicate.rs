@@ -122,32 +122,24 @@ fn translate_expr(
                 _ => TranslateResult::Reject,
             }
         }
-        RemoteExpr::FunctionCall {
-            id,
-            args,
-            return_type,
-            ..
-        } if args.len() == 2
-            && matches!(args[0], RemoteExpr::ColumnRef { .. })
-            && matches!(args[1], RemoteExpr::Constant { .. }) =>
+        RemoteExpr::FunctionCall { id, args, .. }
+            if args.len() == 2
+                && matches!(args[0], RemoteExpr::ColumnRef { .. })
+                && matches!(args[1], RemoteExpr::Constant { .. }) =>
         {
+            let (_, constant_scalar, constant_type) = args[1].as_constant().unwrap();
             translate_binary(
                 builder,
                 fields,
                 args[0].as_column_ref().unwrap().1,
                 id.name().as_ref(),
-                (args[1].as_constant().unwrap().1, args[1].as_constant().unwrap().2),
-                return_type,
+                (constant_scalar, constant_type),
             )
         }
-        RemoteExpr::FunctionCall {
-            id,
-            args,
-            return_type,
-            ..
-        } if args.len() == 2
-            && matches!(args[1], RemoteExpr::ColumnRef { .. })
-            && matches!(args[0], RemoteExpr::Constant { .. }) =>
+        RemoteExpr::FunctionCall { id, args, .. }
+            if args.len() == 2
+                && matches!(args[1], RemoteExpr::ColumnRef { .. })
+                && matches!(args[0], RemoteExpr::Constant { .. }) =>
         {
             let op = match id.name().as_ref() {
                 "eq" => "eq",
@@ -158,13 +150,13 @@ fn translate_expr(
                 "gte" => "lte",
                 _ => return TranslateResult::Reject,
             };
+            let (_, constant_scalar, constant_type) = args[0].as_constant().unwrap();
             translate_binary(
                 builder,
                 fields,
                 args[1].as_column_ref().unwrap().1,
                 op,
-                (args[0].as_constant().unwrap().1, args[0].as_constant().unwrap().2),
-                return_type,
+                (constant_scalar, constant_type),
             )
         }
         RemoteExpr::FunctionCall { id, args, .. }
@@ -180,7 +172,10 @@ fn translate_expr(
                 .map(|field| field.data_type());
             let mut literals = Vec::with_capacity(args.len() - 1);
             for arg in &args[1..] {
-                let RemoteExpr::Constant { scalar, data_type, .. } = arg else {
+                let RemoteExpr::Constant {
+                    scalar, data_type, ..
+                } = arg
+                else {
                     return TranslateResult::Reject;
                 };
                 let datum = match scalar_to_datum(scalar, field_type, data_type) {
@@ -189,10 +184,9 @@ fn translate_expr(
                 };
                 literals.push(datum);
             }
-            let pred = if id.name().as_ref() == "not_inlist" {
-                builder.is_not_in(name, literals)
-            } else {
-                builder.is_in(name, literals)
+            let pred = match id.name().as_ref() {
+                "not_inlist" => builder.is_not_in(name, literals),
+                _ => builder.is_in(name, literals),
             };
             match pred {
                 Ok(pred) => TranslateResult::Ok(pred),
@@ -258,13 +252,12 @@ fn translate_binary(
     name: &str,
     op: &str,
     constant: (&Scalar, &DataType),
-    return_type: &DataType,
 ) -> TranslateResult {
     let field_type = fields
         .iter()
         .find(|field| field.name() == name)
         .map(|field| field.data_type());
-    let datum = match scalar_to_datum(constant.0, field_type, return_type) {
+    let datum = match scalar_to_datum(constant.0, field_type, constant.1) {
         Some(datum) => datum,
         None => return TranslateResult::Reject,
     };
@@ -304,10 +297,7 @@ fn scalar_to_datum(
             _ => None,
         },
         Scalar::Date(v) => Some(Datum::Date(*v)),
-        Scalar::Timestamp(v) => Some(Datum::Timestamp {
-            millis: *v,
-            nanos: 0,
-        }),
+        Scalar::Timestamp(v) => Some(databend_timestamp_micros_to_datum(*v, false)),
         Scalar::Decimal(dec) => {
             let value = decimal_scalar_to_i128(dec)?;
             let size = dec.size();
@@ -360,11 +350,12 @@ fn scalar_to_datum_for_type(scalar: &Scalar, field_type: &PaimonDataType) -> Opt
             Scalar::Date(v) => Some(Datum::Date(*v)),
             _ => None,
         },
-        PaimonDataType::Timestamp(_) | PaimonDataType::LocalZonedTimestamp(_) => match scalar {
-            Scalar::Timestamp(v) => Some(Datum::Timestamp {
-                millis: *v,
-                nanos: 0,
-            }),
+        PaimonDataType::Timestamp(_) => match scalar {
+            Scalar::Timestamp(v) => Some(databend_timestamp_micros_to_datum(*v, false)),
+            _ => None,
+        },
+        PaimonDataType::LocalZonedTimestamp(_) => match scalar {
+            Scalar::Timestamp(v) => Some(databend_timestamp_micros_to_datum(*v, true)),
             _ => None,
         },
         PaimonDataType::Decimal(decimal_type) => {
@@ -391,6 +382,19 @@ fn scalar_to_datum_for_type(scalar: &Scalar, field_type: &PaimonDataType) -> Opt
             }
         }
         _ => None,
+    }
+}
+
+fn databend_timestamp_micros_to_datum(micros: i64, local_zoned: bool) -> Datum {
+    const MICROS_PER_MILLI: i64 = 1_000;
+    const NANOS_PER_MICRO: i64 = 1_000;
+    let millis = micros.div_euclid(MICROS_PER_MILLI);
+    let sub_milli_micros = micros.rem_euclid(MICROS_PER_MILLI);
+    let nanos = (sub_milli_micros * NANOS_PER_MICRO) as i32;
+    if local_zoned {
+        Datum::LocalZonedTimestamp { millis, nanos }
+    } else {
+        Datum::Timestamp { millis, nanos }
     }
 }
 
@@ -437,10 +441,10 @@ pub fn apply_pushdowns<'a>(
         if let Some(predicate) = &analysis.predicate {
             read_builder.with_filter(predicate.clone());
         }
-        if can_push_limit(push_downs.limit, &analysis, &read_builder) {
-            if let Some(limit) = push_downs.limit {
-                read_builder.with_limit(limit);
-            }
+        if can_push_limit(push_downs.limit, &analysis, &read_builder)
+            && let Some(limit) = push_downs.limit
+        {
+            read_builder.with_limit(limit);
         }
         analysis
     } else {
@@ -450,4 +454,54 @@ pub fn apply_pushdowns<'a>(
         }
     };
     (read_builder, analysis)
+}
+
+#[cfg(test)]
+mod unit_tests {
+    use paimon::spec::Datum;
+
+    use super::*;
+
+    #[test]
+    fn timestamp_positive_and_negative_micros() {
+        assert_eq!(
+            databend_timestamp_micros_to_datum(1_500_000, false),
+            Datum::Timestamp {
+                millis: 1_500,
+                nanos: 0
+            }
+        );
+        assert_eq!(
+            databend_timestamp_micros_to_datum(-1_500_000, false),
+            Datum::Timestamp {
+                millis: -1_500,
+                nanos: 0
+            }
+        );
+    }
+
+    #[test]
+    fn timestamp_submillis_and_local_zoned() {
+        assert_eq!(
+            databend_timestamp_micros_to_datum(1_500, false),
+            Datum::Timestamp {
+                millis: 1,
+                nanos: 500_000
+            }
+        );
+        assert_eq!(
+            databend_timestamp_micros_to_datum(-500, false),
+            Datum::Timestamp {
+                millis: -1,
+                nanos: 500_000
+            }
+        );
+        assert_eq!(
+            databend_timestamp_micros_to_datum(1_500, true),
+            Datum::LocalZonedTimestamp {
+                millis: 1,
+                nanos: 500_000
+            }
+        );
+    }
 }

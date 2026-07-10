@@ -5707,6 +5707,7 @@ pub fn engine(i: Input) -> IResult<Engine> {
         value(Engine::Random, rule! { RANDOM }),
         value(Engine::Iceberg, rule! { ICEBERG }),
         value(Engine::Delta, rule! { DELTA }),
+        value(Engine::Paimon, rule! { PAIMON }),
         value(Engine::Proxy, rule! { PROXY }),
     ));
 

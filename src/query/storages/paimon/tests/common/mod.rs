@@ -12,13 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow_array::Int32Array;
 use arrow_array::RecordBatch;
 use arrow_array::StringArray;
-use arrow_schema::{DataType as ArrowDataType, Field as ArrowField, Schema as ArrowSchema};
+use arrow_schema::DataType as ArrowDataType;
+use arrow_schema::Field as ArrowField;
+use arrow_schema::Schema as ArrowSchema;
 use chrono::Utc;
 use databend_common_catalog::table::Table;
 use databend_common_meta_app::schema::CatalogInfo;
@@ -37,8 +41,13 @@ use paimon::CatalogOptions;
 use paimon::FileSystemCatalog;
 use paimon::Options;
 use paimon::catalog::Identifier;
-use paimon::spec::{DataType, IntType, Schema, VarCharType};
+use paimon::spec::DataType;
+use paimon::spec::IntType;
+use paimon::spec::Schema;
+use paimon::spec::VarCharType;
 use tempfile::TempDir;
+
+pub mod pipeline;
 
 pub struct TestWarehouse {
     pub _dir: TempDir,
@@ -131,13 +140,10 @@ async fn write_batch(table: &paimon::Table, ids: Vec<i32>, names: Vec<&str>) {
         ArrowField::new("id", ArrowDataType::Int32, false),
         ArrowField::new("name", ArrowDataType::Utf8, false),
     ]));
-    let batch = RecordBatch::try_new(
-        schema,
-        vec![
-            Arc::new(Int32Array::from(ids)),
-            Arc::new(StringArray::from(names)),
-        ],
-    )
+    let batch = RecordBatch::try_new(schema, vec![
+        Arc::new(Int32Array::from(ids)),
+        Arc::new(StringArray::from(names)),
+    ])
     .expect("record batch");
     table_write
         .write_arrow_batch(&batch)
@@ -151,17 +157,18 @@ async fn write_batch(table: &paimon::Table, ids: Vec<i32>, names: Vec<&str>) {
         .expect("commit");
 }
 
-pub async fn databend_table(
-    warehouse: &str,
-    identifier: &Identifier,
-) -> Arc<dyn Table> {
+pub async fn databend_table(warehouse: &str, identifier: &Identifier) -> Arc<dyn Table> {
     let catalog = filesystem_catalog(warehouse);
     let paimon_table = catalog
         .get_table(identifier)
         .await
         .expect("get paimon table");
-    PaimonTable::from_paimon_table(catalog_info(warehouse), catalog_options(warehouse), paimon_table)
-        .expect("databend table")
+    PaimonTable::from_paimon_table(
+        catalog_info(warehouse),
+        catalog_options(warehouse),
+        paimon_table,
+    )
+    .expect("databend table")
 }
 
 fn catalog_options(warehouse: &str) -> HashMap<String, String> {
@@ -180,7 +187,7 @@ pub async fn read_rows_via_paimon(warehouse: &str, identifier: &Identifier) -> V
     let mut rows = Vec::new();
     for split in plan.splits() {
         let mut stream = table_read
-            .to_arrow(&[split.clone()])
+            .to_arrow(std::slice::from_ref(split))
             .expect("arrow stream");
         while let Some(batch) = stream.next().await {
             let batch = batch.expect("batch");
@@ -204,7 +211,7 @@ pub async fn read_rows_via_paimon(warehouse: &str, identifier: &Identifier) -> V
 
 pub async fn paimon_catalog(warehouse: &str) -> PaimonCatalog {
     let info = catalog_info(warehouse);
-    tokio::task::spawn_blocking(move || PaimonCatalog::try_create(info))
+    databend_common_base::runtime::spawn_blocking(move || PaimonCatalog::try_create(info))
         .await
         .expect("join catalog task")
         .expect("paimon catalog")

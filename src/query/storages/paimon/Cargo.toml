@@ -38,7 +38,10 @@ storage-hdfs = ["paimon/storage-hdfs"]
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
 chrono = { workspace = true }
+databend-common-catalog = { workspace = true }
 databend-common-meta-app = { workspace = true }
+databend-common-sql = { workspace = true }
+databend-query = { workspace = true }
 pretty_assertions = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

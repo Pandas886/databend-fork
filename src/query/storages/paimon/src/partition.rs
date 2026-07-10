@@ -55,9 +55,7 @@ impl From<&DataSplit> for SerializableDataSplit {
             bucket_path: split.bucket_path().to_string(),
             total_buckets: split.total_buckets(),
             data_files: split.data_files().to_vec(),
-            deletion_files: split
-                .data_deletion_files()
-                .map(|files| files.to_vec()),
+            deletion_files: split.data_deletion_files().map(|files| files.to_vec()),
             row_ranges: split.row_ranges().map(|ranges| ranges.to_vec()),
         }
     }
