@@ -1,0 +1,238 @@
+name: Fork Packages
+
+# Lightweight packaging CI for Pandas886/databend-fork.
+# Builds deployable tar.gz for:
+#   - aarch64-apple-darwin  (ARM Mac)
+#   - x86_64-unknown-linux-gnu (Linux x86_64)
+#
+# Does not use upstream self-hosted AWS runners.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: |
+          Package version string used in tarball names.
+          Leave empty to use fork-<shortsha>.
+        required: false
+        type: string
+        default: ""
+      create_release:
+        description: Upload tarballs to a GitHub Release (draft)
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+env:
+  BUILD_PROFILE: release
+  RUNNER_PROVIDER: github
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      sha: ${{ steps.meta.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Resolve version
+        id: meta
+        shell: bash
+        run: |
+          sha="${GITHUB_SHA}"
+          short_sha="${sha:0:10}"
+          version="${{ inputs.version }}"
+          if [[ -z "${version}" ]]; then
+            version="fork-${short_sha}"
+          fi
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "Packaging version=${version} sha=${sha}" >> "$GITHUB_STEP_SUMMARY"
+
+  build_macos_arm:
+    needs: prepare
+    runs-on: macos-14
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Build
+        uses: ./.github/actions/build_macos
+        with:
+          target: aarch64-apple-darwin
+          artifacts: query,meta,metactl
+          upload: "true"
+
+  build_linux_x86:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Free disk space
+        shell: bash
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          df -h
+      - name: Build
+        uses: ./.github/actions/build_linux
+        with:
+          sha: ${{ needs.prepare.outputs.sha }}
+          target: x86_64-unknown-linux-gnu
+          artifacts: query,meta,metactl
+          features: default
+          category: default
+          trim_debug: "true"
+          upload: "true"
+
+  create_release:
+    if: ${{ inputs.create_release }}
+    needs:
+      - prepare
+      - build_macos_arm
+      - build_linux_x86
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          SHA: ${{ needs.prepare.outputs.sha }}
+        run: |
+          set -euo pipefail
+          if gh release view "${VERSION}" >/dev/null 2>&1; then
+            echo "Release ${VERSION} already exists"
+            exit 0
+          fi
+          gh release create "${VERSION}" \
+            --repo "${{ github.repository }}" \
+            --target "${SHA}" \
+            --title "${VERSION}" \
+            --notes "Fork deploy packages for macOS ARM (\`aarch64-apple-darwin\`) and Linux x86_64 (\`x86_64-unknown-linux-gnu\`)." \
+            --draft
+
+  package:
+    needs:
+      - prepare
+      - build_macos_arm
+      - build_linux_x86
+      - create_release
+    # create_release may be skipped when create_release=false
+    if: ${{ always() && needs.build_macos_arm.result == 'success' && needs.build_linux_x86.result == 'success' && (needs.create_release.result == 'success' || needs.create_release.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+          - target: x86_64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v6
+      - name: Download binaries
+        uses: ./.github/actions/artifact_download
+        with:
+          sha: ${{ needs.prepare.outputs.sha }}
+          target: ${{ matrix.target }}
+          category: default
+          path: distro/bin
+          artifacts: query,meta,metactl
+      - name: Download BendSQL (optional)
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="${{ matrix.target }}"
+          # Best-effort: packaging still succeeds if bendsql asset is missing.
+          release="$(gh api repos/databendlabs/bendsql/releases/latest --jq .tag_name)"
+          url="https://github.com/databendlabs/bendsql/releases/download/${release}/bendsql-${target}.tar.gz"
+          if curl -fsSL "$url" -o /tmp/bendsql.tar.gz; then
+            tar -xzf /tmp/bendsql.tar.gz -C distro/bin
+            echo "Bundled bendsql ${release}"
+          else
+            echo "Skip bendsql for ${target}: download failed"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Pack tar.gz
+        id: pack
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="${{ matrix.target }}"
+          version="${{ needs.prepare.outputs.version }}"
+          pkg_name="databend-${version}-${target}"
+
+          mkdir -p distro/{configs,systemd,scripts}
+          cp ./scripts/distribution/systemd/databend-* distro/systemd/
+          cp ./scripts/distribution/configs/databend-* distro/configs/
+          cp ./scripts/distribution/release-readme.txt distro/readme.txt
+          cp -r ./scripts/distribution/package-scripts/* distro/scripts/
+          chmod +x distro/bin/databend-* || true
+
+          tar -C ./distro -czvf "${pkg_name}.tar.gz" bin configs systemd scripts readme.txt
+          sha256sum "${pkg_name}.tar.gz" | tee "sha256-${pkg_name}.txt"
+
+          echo "pkg_name=${pkg_name}" >> "$GITHUB_OUTPUT"
+          ls -lh "${pkg_name}.tar.gz"
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.pack.outputs.pkg_name }}
+          path: |
+            ${{ steps.pack.outputs.pkg_name }}.tar.gz
+            sha256-${{ steps.pack.outputs.pkg_name }}.txt
+          retention-days: 14
+      - name: Upload to GitHub Release
+        if: ${{ inputs.create_release }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          PKG: ${{ steps.pack.outputs.pkg_name }}
+        run: |
+          set -euo pipefail
+          gh release upload "${VERSION}" \
+            --repo "${{ github.repository }}" \
+            "${PKG}.tar.gz" \
+            "sha256-${PKG}.txt" \
+            --clobber
+
+  summary:
+    if: always()
+    needs:
+      - prepare
+      - build_macos_arm
+      - build_linux_x86
+      - create_release
+      - package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Result
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          MAC: ${{ needs.build_macos_arm.result }}
+          LINUX: ${{ needs.build_linux_x86.result }}
+          REL: ${{ needs.create_release.result }}
+          PKG: ${{ needs.package.result }}
+        run: |
+          {
+            echo "## Fork Packages"
+            echo "- version: \`${VERSION}\`"
+            echo "- macOS ARM build: \`${MAC}\`"
+            echo "- Linux x86_64 build: \`${LINUX}\`"
+            echo "- create release: \`${REL}\`"
+            echo "- package: \`${PKG}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [[ "${MAC}" != "success" || "${LINUX}" != "success" || "${PKG}" != "success" ]]; then
+            exit 1
+          fi
+          if [[ "${REL}" != "success" && "${REL}" != "skipped" ]]; then
+            exit 1
+          fi
