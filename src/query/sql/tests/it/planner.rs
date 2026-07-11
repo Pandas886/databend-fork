@@ -602,6 +602,35 @@ async fn paimon_catalog_filesystem() -> Result<()> {
     Ok(())
 }
 
+/// Quoted dotted CONNECTION keys keep the quotes in the plan map; catalog try_create strips them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn paimon_catalog_filesystem_s3_quoted_keys() -> Result<()> {
+    let fixture = LiteTableContext::create().await?;
+    let sql = r#"CREATE CATALOG p TYPE = PAIMON CONNECTION = (
+        METASTORE='filesystem',
+        WAREHOUSE='s3://bucket/warehouse',
+        "s3.endpoint"='http://127.0.0.1:9900',
+        "s3.region"='us-east-1'
+    )"#;
+    let plan = plan_sql(&fixture, sql).await?;
+    let Plan::CreateCatalog(plan) = plan else {
+        panic!("expected CreateCatalog")
+    };
+    let CatalogOption::Paimon(option) = plan.meta.catalog_option else {
+        panic!("expected paimon")
+    };
+    // Parser stores quoted idents with quotes intact (Iceberg/Paimon both strip at catalog build).
+    assert_eq!(
+        option.options.get("\"s3.region\"").map(String::as_str),
+        Some("us-east-1")
+    );
+    assert_eq!(
+        option.options.get("\"s3.endpoint\"").map(String::as_str),
+        Some("http://127.0.0.1:9900")
+    );
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn paimon_catalog_missing_warehouse() -> Result<()> {
     let fixture = LiteTableContext::create().await?;

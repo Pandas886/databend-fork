@@ -47,6 +47,10 @@ name = "catalog"
 path = "tests/catalog.rs"
 
 [[test]]
+name = "connection_options"
+path = "tests/connection_options.rs"
+
+[[test]]
 name = "partition"
 path = "tests/partition.rs"
 

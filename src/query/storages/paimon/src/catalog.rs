@@ -136,10 +136,23 @@ pub struct PaimonCatalog {
     ctl: Arc<dyn PaimonInnerCatalog>,
 }
 
+/// CONNECTION option keys with dots (e.g. `s3.region`) must be written as quoted idents
+/// (`"s3.region"`). `Identifier::Display` keeps the quotes in the key string; strip them
+/// when building the catalog / reopening tables, same as Iceberg `trim_props`.
+pub(crate) fn trim_option_key(key: &str) -> &str {
+    key.trim_matches('"')
+}
+
+pub(crate) fn trim_option_keys(raw: &HashMap<String, String>) -> HashMap<String, String> {
+    raw.iter()
+        .map(|(k, v)| (trim_option_key(k).to_string(), v.clone()))
+        .collect()
+}
+
 impl PaimonCatalog {
     pub fn try_create(info: Arc<CatalogInfo>) -> Result<Self> {
         let options = match &info.meta.catalog_option {
-            CatalogOption::Paimon(PaimonCatalogOption { options }) => options.clone(),
+            CatalogOption::Paimon(PaimonCatalogOption { options }) => trim_option_keys(options),
             _ => {
                 return Err(ErrorCode::Internal(
                     "trying to create paimon catalog from other catalog type".to_string(),
