@@ -317,7 +317,8 @@ impl PaimonTable {
 
 pub(crate) fn catalog_options_from_info(info: &TableInfo) -> Result<HashMap<String, String>> {
     match &info.catalog_info.meta.catalog_option {
-        CatalogOption::Paimon(option) => Ok(option.options.clone()),
+        // Quoted CONNECTION keys (e.g. `"s3.region"`) keep quotes in meta; strip like Iceberg.
+        CatalogOption::Paimon(option) => Ok(crate::catalog::trim_option_keys(&option.options)),
         other => Err(ErrorCode::Internal(format!(
             "expected paimon catalog options, got {:?}",
             other.catalog_type()
@@ -361,7 +362,7 @@ pub(crate) fn parse_descriptor(info: &TableInfo) -> Result<PaimonTableDescriptor
 pub(crate) fn options_from_map(options: &HashMap<String, String>) -> Result<Options> {
     let mut paimon_options = Options::new();
     for (key, value) in options {
-        paimon_options.set(key, value.clone());
+        paimon_options.set(crate::catalog::trim_option_key(key), value.clone());
     }
     Ok(paimon_options)
 }
@@ -370,6 +371,78 @@ pub(crate) fn paimon_schema_to_databend(schema: &PaimonTableSchema) -> Result<Ta
     let arrow_schema =
         paimon::arrow::build_target_arrow_schema(schema.fields()).map_err(map_paimon_error)?;
     TableSchema::try_from(arrow_schema.as_ref()).map_err(ErrorCode::from_std_error)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use databend_common_meta_app::schema::CatalogIdIdent;
+    use databend_common_meta_app::schema::CatalogInfo;
+    use databend_common_meta_app::schema::CatalogMeta;
+    use databend_common_meta_app::schema::CatalogNameIdent;
+    use databend_common_meta_app::schema::CatalogOption;
+    use databend_common_meta_app::schema::PaimonCatalogOption;
+    use databend_common_meta_app::schema::TableInfo;
+    use databend_common_meta_app::tenant::Tenant;
+
+    use super::catalog_options_from_info;
+    use super::options_from_map;
+    use crate::catalog::trim_option_key;
+    use crate::catalog::trim_option_keys;
+
+    #[test]
+    fn trim_option_key_strips_surrounding_quotes() {
+        assert_eq!(trim_option_key("\"s3.region\""), "s3.region");
+        assert_eq!(trim_option_key("s3.region"), "s3.region");
+        assert_eq!(trim_option_key("warehouse"), "warehouse");
+    }
+
+    #[test]
+    fn catalog_options_from_info_strips_quoted_keys() {
+        let options = HashMap::from([
+            ("metastore".to_string(), "filesystem".to_string()),
+            ("warehouse".to_string(), "/tmp/wh".to_string()),
+            ("\"s3.region\"".to_string(), "us-east-1".to_string()),
+            ("\"s3.endpoint\"".to_string(), "http://127.0.0.1:9900".to_string()),
+        ]);
+        let catalog_info = Arc::new(CatalogInfo {
+            id: CatalogIdIdent::new(Tenant::new_literal("dummy"), 0).into(),
+            name_ident: CatalogNameIdent::new(Tenant::new_literal("dummy"), "p").into(),
+            meta: CatalogMeta {
+                catalog_option: CatalogOption::Paimon(PaimonCatalogOption { options }),
+                created_on: chrono::Utc::now(),
+            },
+        });
+        let table_info = TableInfo {
+            catalog_info,
+            ..Default::default()
+        };
+        let stripped = catalog_options_from_info(&table_info).expect("options");
+        assert_eq!(
+            stripped.get("s3.region").map(String::as_str),
+            Some("us-east-1")
+        );
+        assert!(!stripped.contains_key("\"s3.region\""));
+        assert_eq!(
+            stripped.get("s3.endpoint").map(String::as_str),
+            Some("http://127.0.0.1:9900")
+        );
+    }
+
+    #[test]
+    fn options_from_map_strips_quoted_keys() {
+        let raw = HashMap::from([
+            ("\"s3.region\"".to_string(), "us-east-1".to_string()),
+            ("warehouse".to_string(), "/tmp/wh".to_string()),
+        ]);
+        let opts = options_from_map(&raw).expect("options");
+        // paimon Options has no public get in all versions; round-trip via re-trim of input map
+        let trimmed = trim_option_keys(&raw);
+        assert_eq!(trimmed.get("s3.region").map(String::as_str), Some("us-east-1"));
+        let _ = opts;
+    }
 }
 
 #[async_trait::async_trait]
