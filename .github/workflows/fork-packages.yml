@@ -25,6 +25,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 env:
   BUILD_PROFILE: release
@@ -52,10 +53,81 @@ jobs:
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "Packaging version=${version} sha=${sha}" >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Cleanup previous packages
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Cleanup previous packages"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          deleted_releases=0
+          # Delete prior fork package releases (and tags) so assets do not accumulate.
+          while read -r tag; do
+            [[ -z "${tag}" ]] && continue
+            echo "Deleting release: ${tag}"
+            if gh release delete "${tag}" --repo "${REPO}" --yes --cleanup-tag; then
+              deleted_releases=$((deleted_releases + 1))
+            else
+              echo "Warn: failed to delete release ${tag}" >&2
+            fi
+          done < <(
+            gh api --paginate "repos/${REPO}/releases" \
+              --jq '.[] | select(.tag_name | test("^fork-")) | .tag_name'
+          )
+
+          deleted_artifacts=0
+          page=1
+          while true; do
+            resp="$(gh api "repos/${REPO}/actions/artifacts?per_page=100&page=${page}")"
+            count="$(echo "${resp}" | jq '.artifacts | length')"
+            if [[ "${count}" -eq 0 ]]; then
+              break
+            fi
+
+            while read -r id name; do
+              [[ -z "${id}" ]] && continue
+              echo "Deleting artifact: ${name} (id=${id})"
+              if gh api -X DELETE "repos/${REPO}/actions/artifacts/${id}"; then
+                deleted_artifacts=$((deleted_artifacts + 1))
+              else
+                echo "Warn: failed to delete artifact ${name} (id=${id})" >&2
+              fi
+            done < <(
+              echo "${resp}" | jq -r '
+                .artifacts[]
+                | select(.expired | not)
+                | select(
+                    .name
+                    | test("^(release-|databend-fork-|databend-.*-(aarch64-apple-darwin|x86_64-unknown-linux-gnu)$)")
+                  )
+                | "\(.id) \(.name)"
+              '
+            )
+
+            page=$((page + 1))
+            if [[ "${page}" -gt 50 ]]; then
+              echo "Warn: stopped artifact cleanup after 50 pages" >&2
+              break
+            fi
+          done
+
+          {
+            echo "- deleted fork-* releases: ${deleted_releases}"
+            echo "- deleted packaging artifacts: ${deleted_artifacts}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   build_macos_arm:
     needs: prepare
     runs-on: macos-14
     timeout-minutes: 180
+    env:
+      # GitHub-hosted macOS uses Apple ld/libLTO (LLVM 15), which cannot parse
+      # thin-LTO bitcode produced by Rust nightly (LLVM 21). Disable LTO for macOS.
+      CARGO_PROFILE_RELEASE_LTO: "off"
     steps:
       - uses: actions/checkout@v6
         with:
@@ -187,7 +259,7 @@ jobs:
           path: |
             ${{ steps.pack.outputs.pkg_name }}.tar.gz
             sha256-${{ steps.pack.outputs.pkg_name }}.txt
-          retention-days: 14
+          retention-days: 3
       - name: Upload to GitHub Release
         if: ${{ inputs.create_release }}
         shell: bash
@@ -203,6 +275,56 @@ jobs:
             "sha256-${PKG}.txt" \
             --clobber
 
+  # Intermediate release-* binaries are large; drop them after final packages exist.
+  cleanup_build_artifacts:
+    if: ${{ always() && needs.package.result == 'success' }}
+    needs:
+      - prepare
+      - package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete intermediate build artifacts for this SHA
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ needs.prepare.outputs.sha }}
+        run: |
+          set -euo pipefail
+          deleted=0
+          page=1
+          prefix="release-${SHA}-"
+          while true; do
+            resp="$(gh api "repos/${REPO}/actions/artifacts?per_page=100&page=${page}")"
+            count="$(echo "${resp}" | jq '.artifacts | length')"
+            if [[ "${count}" -eq 0 ]]; then
+              break
+            fi
+
+            while read -r id name; do
+              [[ -z "${id}" ]] && continue
+              echo "Deleting intermediate artifact: ${name} (id=${id})"
+              if gh api -X DELETE "repos/${REPO}/actions/artifacts/${id}"; then
+                deleted=$((deleted + 1))
+              else
+                echo "Warn: failed to delete ${name}" >&2
+              fi
+            done < <(
+              echo "${resp}" | jq -r --arg p "${prefix}" '
+                .artifacts[]
+                | select(.expired | not)
+                | select(.name | startswith($p))
+                | "\(.id) \(.name)"
+              '
+            )
+
+            page=$((page + 1))
+            if [[ "${page}" -gt 20 ]]; then
+              break
+            fi
+          done
+          echo "Deleted intermediate artifacts: ${deleted}" >> "$GITHUB_STEP_SUMMARY"
+
   summary:
     if: always()
     needs:
@@ -211,6 +333,7 @@ jobs:
       - build_linux_x86
       - create_release
       - package
+      - cleanup_build_artifacts
     runs-on: ubuntu-latest
     steps:
       - name: Result
@@ -221,6 +344,7 @@ jobs:
           LINUX: ${{ needs.build_linux_x86.result }}
           REL: ${{ needs.create_release.result }}
           PKG: ${{ needs.package.result }}
+          CLEAN: ${{ needs.cleanup_build_artifacts.result }}
         run: |
           {
             echo "## Fork Packages"
@@ -229,6 +353,7 @@ jobs:
             echo "- Linux x86_64 build: \`${LINUX}\`"
             echo "- create release: \`${REL}\`"
             echo "- package: \`${PKG}\`"
+            echo "- cleanup build artifacts: \`${CLEAN}\`"
           } >> "$GITHUB_STEP_SUMMARY"
           if [[ "${MAC}" != "success" || "${LINUX}" != "success" || "${PKG}" != "success" ]]; then
             exit 1
