@@ -44,12 +44,13 @@ runs:
       shell: bash
       run: |
         artifacts="${{ inputs.artifacts }}"
-        echo "==> building libs ..."
-        cargo build --target ${{ inputs.target }} --profile ${{ env.BUILD_PROFILE }} --lib
+        bins=""
         for artifact in ${artifacts//,/ }; do
-          echo "==> building databend-$artifact ..."
-          cargo build --target ${{ inputs.target }} --profile ${{ env.BUILD_PROFILE }} --bin databend-$artifact
+          bins="${bins} --bin databend-${artifact}"
         done
+        echo "==> building binaries:${bins}"
+        # One cargo invocation avoids repeated unit-graph work and links deps once.
+        cargo build --target ${{ inputs.target }} --profile ${{ env.BUILD_PROFILE }} ${bins}
 
     - name: Upload artifact
       if: inputs.upload == 'true'

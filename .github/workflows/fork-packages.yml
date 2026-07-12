@@ -6,6 +6,11 @@ name: Fork Packages
 #   - x86_64-unknown-linux-gnu (Linux x86_64)
 #
 # Does not use upstream self-hosted AWS runners.
+#
+# Speed notes (vs upstream release profile):
+# - LTO off, higher codegen-units, no debuginfo → much faster compile/link
+# - Optional platform filter so you can build only what you need
+# - One cargo invocation per platform (all bins together)
 
 on:
   workflow_dispatch:
@@ -17,6 +22,15 @@ on:
         required: false
         type: string
         default: ""
+      platforms:
+        description: Platforms to build
+        required: false
+        type: choice
+        options:
+          - both
+          - linux
+          - macos
+        default: both
       create_release:
         description: Upload tarballs to a GitHub Release (draft)
         required: false
@@ -30,6 +44,12 @@ permissions:
 env:
   BUILD_PROFILE: release
   RUNNER_PROVIDER: github
+  # Faster packaging profile (still release-optimized, not peak-perf).
+  # Upstream release uses lto=thin, codegen-units=1, debug=1, opt-level=s.
+  CARGO_PROFILE_RELEASE_LTO: "off"
+  CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+  CARGO_PROFILE_RELEASE_DEBUG: "0"
+  CARGO_PROFILE_RELEASE_OPT_LEVEL: "3"
 
 jobs:
   prepare:
@@ -37,21 +57,64 @@ jobs:
     outputs:
       version: ${{ steps.meta.outputs.version }}
       sha: ${{ steps.meta.outputs.sha }}
+      package_matrix: ${{ steps.meta.outputs.package_matrix }}
+      build_macos: ${{ steps.meta.outputs.build_macos }}
+      build_linux: ${{ steps.meta.outputs.build_linux }}
     steps:
       - uses: actions/checkout@v6
-      - name: Resolve version
+      - name: Resolve version and platforms
         id: meta
         shell: bash
         run: |
+          set -euo pipefail
           sha="${GITHUB_SHA}"
           short_sha="${sha:0:10}"
           version="${{ inputs.version }}"
           if [[ -z "${version}" ]]; then
             version="fork-${short_sha}"
           fi
+
+          platforms="${{ inputs.platforms }}"
+          build_macos=false
+          build_linux=false
+          matrix_items=()
+          case "${platforms}" in
+            both)
+              build_macos=true
+              build_linux=true
+              matrix_items+=('{"target":"aarch64-apple-darwin"}')
+              matrix_items+=('{"target":"x86_64-unknown-linux-gnu"}')
+              ;;
+            macos)
+              build_macos=true
+              matrix_items+=('{"target":"aarch64-apple-darwin"}')
+              ;;
+            linux)
+              build_linux=true
+              matrix_items+=('{"target":"x86_64-unknown-linux-gnu"}')
+              ;;
+            *)
+              echo "Unknown platforms: ${platforms}" >&2
+              exit 1
+              ;;
+          esac
+
+          package_matrix="{\"include\":[$(IFS=,; echo "${matrix_items[*]}")]}"
+
           echo "sha=${sha}" >> "$GITHUB_OUTPUT"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
-          echo "Packaging version=${version} sha=${sha}" >> "$GITHUB_STEP_SUMMARY"
+          echo "build_macos=${build_macos}" >> "$GITHUB_OUTPUT"
+          echo "build_linux=${build_linux}" >> "$GITHUB_OUTPUT"
+          echo "package_matrix=${package_matrix}" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## Prepare"
+            echo "- version: \`${version}\`"
+            echo "- sha: \`${sha}\`"
+            echo "- platforms: \`${platforms}\`"
+            echo "- package matrix: \`${package_matrix}\`"
+            echo "- fast profile: LTO=off, codegen-units=16, debug=0, opt-level=3"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Cleanup previous packages
         shell: bash
@@ -121,13 +184,10 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   build_macos_arm:
+    if: ${{ needs.prepare.outputs.build_macos == 'true' }}
     needs: prepare
     runs-on: macos-14
     timeout-minutes: 180
-    env:
-      # GitHub-hosted macOS uses Apple ld/libLTO (LLVM 15), which cannot parse
-      # thin-LTO bitcode produced by Rust nightly (LLVM 21). Disable LTO for macOS.
-      CARGO_PROFILE_RELEASE_LTO: "off"
     steps:
       - uses: actions/checkout@v6
         with:
@@ -140,6 +200,7 @@ jobs:
           upload: "true"
 
   build_linux_x86:
+    if: ${{ needs.prepare.outputs.build_linux == 'true' }}
     needs: prepare
     runs-on: ubuntu-latest
     timeout-minutes: 360
@@ -164,7 +225,7 @@ jobs:
           upload: "true"
 
   create_release:
-    if: ${{ inputs.create_release }}
+    if: ${{ always() && inputs.create_release && needs.prepare.result == 'success' && (needs.build_macos_arm.result == 'success' || needs.build_macos_arm.result == 'skipped') && (needs.build_linux_x86.result == 'success' || needs.build_linux_x86.result == 'skipped') && (needs.build_macos_arm.result == 'success' || needs.build_linux_x86.result == 'success') }}
     needs:
       - prepare
       - build_macos_arm
@@ -187,7 +248,7 @@ jobs:
             --repo "${{ github.repository }}" \
             --target "${SHA}" \
             --title "${VERSION}" \
-            --notes "Fork deploy packages for macOS ARM (\`aarch64-apple-darwin\`) and Linux x86_64 (\`x86_64-unknown-linux-gnu\`)." \
+            --notes "Fork deploy packages (fast profile: no LTO). Platforms selected at build time." \
             --draft
 
   package:
@@ -196,15 +257,11 @@ jobs:
       - build_macos_arm
       - build_linux_x86
       - create_release
-    # create_release may be skipped when create_release=false
-    if: ${{ always() && needs.build_macos_arm.result == 'success' && needs.build_linux_x86.result == 'success' && (needs.create_release.result == 'success' || needs.create_release.result == 'skipped') }}
+    if: ${{ always() && needs.prepare.result == 'success' && (needs.build_macos_arm.result == 'success' || needs.build_macos_arm.result == 'skipped') && (needs.build_linux_x86.result == 'success' || needs.build_linux_x86.result == 'skipped') && (needs.build_macos_arm.result == 'success' || needs.build_linux_x86.result == 'success') && (needs.create_release.result == 'success' || needs.create_release.result == 'skipped') }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - target: aarch64-apple-darwin
-          - target: x86_64-unknown-linux-gnu
+      matrix: ${{ fromJson(needs.prepare.outputs.package_matrix) }}
     steps:
       - uses: actions/checkout@v6
       - name: Download binaries
@@ -340,6 +397,8 @@ jobs:
         shell: bash
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
+          WANT_MAC: ${{ needs.prepare.outputs.build_macos }}
+          WANT_LINUX: ${{ needs.prepare.outputs.build_linux }}
           MAC: ${{ needs.build_macos_arm.result }}
           LINUX: ${{ needs.build_linux_x86.result }}
           REL: ${{ needs.create_release.result }}
@@ -349,15 +408,26 @@ jobs:
           {
             echo "## Fork Packages"
             echo "- version: \`${VERSION}\`"
-            echo "- macOS ARM build: \`${MAC}\`"
-            echo "- Linux x86_64 build: \`${LINUX}\`"
+            echo "- macOS ARM build: \`${MAC}\` (wanted=${WANT_MAC})"
+            echo "- Linux x86_64 build: \`${LINUX}\` (wanted=${WANT_LINUX})"
             echo "- create release: \`${REL}\`"
             echo "- package: \`${PKG}\`"
             echo "- cleanup build artifacts: \`${CLEAN}\`"
           } >> "$GITHUB_STEP_SUMMARY"
-          if [[ "${MAC}" != "success" || "${LINUX}" != "success" || "${PKG}" != "success" ]]; then
-            exit 1
+
+          ok=true
+          if [[ "${WANT_MAC}" == "true" && "${MAC}" != "success" ]]; then
+            ok=false
+          fi
+          if [[ "${WANT_LINUX}" == "true" && "${LINUX}" != "success" ]]; then
+            ok=false
+          fi
+          if [[ "${PKG}" != "success" ]]; then
+            ok=false
           fi
           if [[ "${REL}" != "success" && "${REL}" != "skipped" ]]; then
+            ok=false
+          fi
+          if [[ "${ok}" != "true" ]]; then
             exit 1
           fi
