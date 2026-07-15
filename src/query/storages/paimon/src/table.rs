@@ -405,7 +405,10 @@ mod tests {
             ("metastore".to_string(), "filesystem".to_string()),
             ("warehouse".to_string(), "/tmp/wh".to_string()),
             ("\"s3.region\"".to_string(), "us-east-1".to_string()),
-            ("\"s3.endpoint\"".to_string(), "http://127.0.0.1:9900".to_string()),
+            (
+                "\"s3.endpoint\"".to_string(),
+                "http://127.0.0.1:9900".to_string(),
+            ),
         ]);
         let catalog_info = Arc::new(CatalogInfo {
             id: CatalogIdIdent::new(Tenant::new_literal("dummy"), 0).into(),
@@ -440,7 +443,10 @@ mod tests {
         let opts = options_from_map(&raw).expect("options");
         // paimon Options has no public get in all versions; round-trip via re-trim of input map
         let trimmed = trim_option_keys(&raw);
-        assert_eq!(trimmed.get("s3.region").map(String::as_str), Some("us-east-1"));
+        assert_eq!(
+            trimmed.get("s3.region").map(String::as_str),
+            Some("us-east-1")
+        );
         let _ = opts;
     }
 }

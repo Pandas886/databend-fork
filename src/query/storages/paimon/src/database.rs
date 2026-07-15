@@ -98,9 +98,7 @@ impl Database for PaimonDatabase {
             map_paimon_result(self.catalog.paimon_catalog().get_table(&identifier).await)?;
         if let Some(kind) = kind {
             let paimon_table = match branch {
-                Some(branch) => {
-                    resolve_branch_table(&paimon_table, &base, &branch).await?
-                }
+                Some(branch) => resolve_branch_table(&paimon_table, &base, &branch).await?,
                 None => paimon_table,
             };
             return PaimonSystemTable::create(

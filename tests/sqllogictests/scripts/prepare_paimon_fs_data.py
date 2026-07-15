@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare local filesystem Paimon tables for stateful regression.
+"""Prepare filesystem or S3 Paimon tables for stateful regression.
 
 Run: uv run --project tests/sqllogictests/scripts prepare_paimon_fs_data.py
 
@@ -20,25 +20,49 @@ warehouse = os.environ.get(
     "PAIMON_WAREHOUSE",
     str(Path(__file__).resolve().parents[2] / "data" / "paimon_warehouse"),
 )
-Path(warehouse).mkdir(parents=True, exist_ok=True)
+if "://" in warehouse:
+    warehouse_uri = warehouse
+else:
+    Path(warehouse).mkdir(parents=True, exist_ok=True)
+    warehouse_uri = f"file://{warehouse}"
 
-spark = (
+packages = "org.apache.paimon:paimon-spark-3.5_2.12:1.4.1"
+if warehouse.startswith("s3://"):
+    packages += ",org.apache.paimon:paimon-s3:1.4.1"
+
+builder = (
     SparkSession.builder.appName("prepare-paimon-fs-data")
     .master("local[4]")
-    .config(
-        "spark.jars.packages",
-        "org.apache.paimon:paimon-spark-3.5_2.12:1.4.1",
-    )
+    .config("spark.jars.packages", packages)
     .config(
         "spark.sql.extensions",
         "org.apache.paimon.spark.extensions.PaimonSparkSessionExtensions",
     )
     .config("spark.sql.catalog.paimon", "org.apache.paimon.spark.SparkCatalog")
-    .config("spark.sql.catalog.paimon.warehouse", f"file://{warehouse}")
+    .config("spark.sql.catalog.paimon.warehouse", warehouse_uri)
     .config("spark.sql.shuffle.partitions", "4")
     .config("spark.default.parallelism", "4")
-    .getOrCreate()
 )
+
+if warehouse.startswith("s3://"):
+    builder = (
+        builder.config(
+            "spark.sql.catalog.paimon.s3.endpoint",
+            os.environ["PAIMON_S3_ENDPOINT"],
+        )
+        .config(
+            "spark.sql.catalog.paimon.s3.access-key",
+            os.environ["PAIMON_S3_ACCESS_KEY"],
+        )
+        .config(
+            "spark.sql.catalog.paimon.s3.secret-key",
+            os.environ["PAIMON_S3_SECRET_KEY"],
+        )
+        .config("spark.sql.catalog.paimon.s3.path.style.access", "true")
+        .config("spark.sql.catalog.paimon.s3.region", "us-east-1")
+    )
+
+spark = builder.getOrCreate()
 
 
 def _spark_table_rows(table: str):
@@ -70,14 +94,15 @@ def verify_databend_writes() -> None:
     }
     assert pk_rows == {(1, "new"), (2, "x")}, f"write_pk unexpected rows: {pk_rows}"
 
-    pk_part_rows = {
-        (r["id"], r["value"], r["part"])
-        for r in spark.sql(
-            "SELECT id, value, part FROM paimon.regression.write_pk_part"
-        ).collect()
-    }
-    assert pk_part_rows == {(1, "new", 1), (1, "p2", 2), (2, "x", 1)}, (
-        f"write_pk_part unexpected rows: {pk_part_rows}"
+    pk_part_stats = spark.sql(
+        """
+SELECT count(*) AS rows, sum(id) AS id_sum,
+       sum(CASE WHEN value = 'new' THEN 1 ELSE 0 END) AS updated
+FROM paimon.regression.write_pk_part
+"""
+    ).collect()[0]
+    assert tuple(pk_part_stats) == (10000, 49995000, 1), (
+        f"write_pk_part unexpected stats: {tuple(pk_part_stats)}"
     )
 
     print("Verified Databend Paimon writes")
@@ -165,7 +190,7 @@ TBLPROPERTIES ('primary-key'='part,id', 'bucket'='{buckets}')
 """
         )
 
-    print("Prepared Paimon filesystem warehouse at", warehouse)
+    print("Prepared Paimon warehouse at", warehouse)
 
 
 if __name__ == "__main__":

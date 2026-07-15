@@ -22,8 +22,10 @@ use databend_common_catalog::table_context::TableContextVariables;
 use databend_common_exception::ErrorCode;
 use databend_common_exception::Result;
 use databend_common_expression::Scalar;
+use databend_common_meta_app::schema::CatalogOption;
 use databend_common_sql::FormatOptions;
 use databend_common_sql::MetadataRef;
+use databend_common_sql::Planner;
 use databend_common_sql::optimizer::ir::SExpr;
 use databend_common_sql::plans::Operator;
 use databend_common_sql::plans::Plan;
@@ -37,8 +39,6 @@ use databend_common_sql_test_support::run_test_case_core;
 use crate::framework::LiteTableContext;
 use crate::framework::golden::open_golden_file;
 use crate::framework::golden::write_case_title;
-use databend_common_meta_app::schema::CatalogOption;
-use databend_common_sql::Planner;
 
 struct LiteRunner(Arc<LiteTableContext>);
 
