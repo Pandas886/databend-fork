@@ -55,6 +55,21 @@ metactl.sleep(0.5)  -- Sleep for 500ms
 metactl.sleep(2.0)  -- Sleep for 2 seconds
 ```
 
+### metactl.now_ms()
+
+Returns a monotonic clock reading in milliseconds, for timing and benchmarks.
+
+**Returns:**
+- A number of milliseconds (fractional). The value never decreases between calls; only the difference between two readings is meaningful (the origin is when the Lua environment was created).
+
+**Example:**
+```lua
+local t0 = metactl.now_ms()
+client:upsert("my_key", "my_value")
+local elapsed_ms = metactl.now_ms() - t0
+print(string.format("upsert took %.3f ms", elapsed_ms))
+```
+
 ### metactl.to_string(value)
 
 Converts any Lua value to a human-readable string representation.
@@ -242,6 +257,47 @@ local result = task:join()
 print(result)  -- Output: task result
 ```
 
+## Load Generation
+
+### metactl.ZipfGenerator:new(num_keys, alpha)
+
+Creates a Zipf-distribution load generator. A Zipf distribution models realistic key-access skew, where a small set of keys receives most of the traffic (see [Zipf's law](https://en.wikipedia.org/wiki/Zipf%27s_law)).
+
+**Parameters:**
+- `num_keys` (integer): Number of distinct keys in the dataset. Defaults to `1000`.
+- `alpha` (number): Zipf exponent; higher values skew the distribution more toward low indices. Defaults to `1.0`.
+
+**Returns:**
+- A generator object exposing the `generate_key_index` method, plus the readable fields `num_keys` and `alpha`.
+
+**Example:**
+```lua
+local zipf = metactl.ZipfGenerator:new(1000000, 1.2)
+```
+
+### zipf:generate_key_index(x)
+
+Maps a uniform sample to a Zipf-distributed key index using an O(1) transformation (no lookup table).
+
+**Parameters:**
+- `x` (number): A uniform sample in `[0, 1)`, typically from `math.random()`.
+
+**Returns:**
+- An integer key index, biased toward low values. `x = 0` returns `1`, and the index increases monotonically with `x`.
+
+For `x` close to `1` the result can exceed `num_keys`. Clamp with `math.min` when a strict upper bound is required.
+
+**Example:**
+```lua
+local zipf = metactl.ZipfGenerator:new(1000000, 1.2)
+
+-- Generate a Zipf-distributed access sequence
+for i = 1, 10 do
+    local index = math.min(zipf.num_keys, zipf:generate_key_index(math.random()))
+    print(index)
+end
+```
+
 ## Usage Patterns
 
 ### Basic Key-Value Operations
@@ -334,8 +390,13 @@ The meta service returns structured data that can be processed using `metactl.to
 
 ## Examples
 
-See the test files in `tests/metactl/subcommands/` for comprehensive usage examples:
-- `cmd_lua_grpc.py` - Basic gRPC operations
-- `cmd_lua_transaction.py` - Atomic conditional transactions
-- `cmd_lua_spawn_grpc.py` - Concurrent gRPC operations
-- `cmd_lua_spawn_concurrent.py` - Task spawning patterns
+See the Lua test scripts in `src/meta/control/tests/it/lua/` for comprehensive
+usage examples:
+- `test_grpc_kv.lua` - Basic gRPC operations
+- `test_transaction.lua` - Atomic conditional transactions
+- `test_spawn.lua` - Task spawning and concurrent gRPC operations
+- `test_sleep.lua` - Async sleep
+- `test_to_string.lua` - `metactl.to_string` rendering rules
+
+The CLI surface of `databend-metactl lua` (file and stdin input) is covered by
+`tests/metactl/subcommands/cmd_lua.py`.
