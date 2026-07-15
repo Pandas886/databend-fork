@@ -114,7 +114,11 @@ async fn worker_rebuild_from_table_info_with_quoted_keys() {
         .downcast_ref::<PaimonTable>()
         .expect("paimon table");
 
-    let CatalogOption::Paimon(raw) = &paimon_table.get_table_info().catalog_info.meta.catalog_option
+    let CatalogOption::Paimon(raw) = &paimon_table
+        .get_table_info()
+        .catalog_info
+        .meta
+        .catalog_option
     else {
         panic!("expected paimon catalog option");
     };
