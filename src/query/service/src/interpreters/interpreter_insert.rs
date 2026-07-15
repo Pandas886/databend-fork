@@ -18,6 +18,7 @@ use chrono::Duration;
 use databend_common_catalog::lock::LockTableOption;
 use databend_common_catalog::table::Table;
 use databend_common_catalog::table::TableExt;
+use databend_common_catalog::table_context::TableContextCluster;
 use databend_common_exception::ErrorCode;
 use databend_common_exception::Result;
 use databend_common_expression::ColumnBuilder;
@@ -56,6 +57,7 @@ use databend_query_storage_stage_support::build_streaming_load_pipeline;
 use databend_storages_common_table_meta::meta::TableMetaTimestamps;
 use log::info;
 
+use crate::clusters::ClusterHelper;
 use crate::interpreters::HookOperator;
 use crate::interpreters::Interpreter;
 use crate::interpreters::InterpreterPtr;
@@ -130,6 +132,7 @@ pub fn build_insert_select_physical_plan(
     table: Arc<dyn Table>,
     cast_needed: bool,
     table_meta_timestamps: TableMetaTimestamps,
+    distributed: bool,
 ) -> Result<PhysicalPlan> {
     let table_info = table.get_table_info().clone();
     let needs_pk_route = is_fixed_bucket_primary_key(&table)?;
@@ -166,9 +169,14 @@ pub fn build_insert_select_physical_plan(
             table_meta_timestamps,
             meta: PhysicalPlanMeta::new("DistributedInsertSelect"),
         });
-        // Keep outer Merge (or other top exchange) so writer metas gather on the coordinator.
-        // GlobalShuffle for PK route lives inside `insert.input`.
-        Ok(exchange.derive(vec![insert]))
+        // Keep the outer Merge in a cluster so writer metas gather on the coordinator.
+        // A single node has no self flight edge, so the local writer pipeline is already
+        // the coordinator pipeline and must not retain that Merge.
+        if needs_pk_route && !distributed {
+            Ok(insert)
+        } else {
+            Ok(exchange.derive(vec![insert]))
+        }
     } else {
         let input = if needs_pk_route {
             prepare_and_route(select_plan)?
@@ -187,7 +195,7 @@ pub fn build_insert_select_physical_plan(
             meta: PhysicalPlanMeta::new("DistributedInsertSelect"),
         });
         // VALUES / local select has no top Merge; synthesize one for PK so commit metas gather.
-        if needs_pk_route {
+        if needs_pk_route && distributed {
             Ok(PhysicalPlan::new(Exchange {
                 input: insert,
                 kind: FragmentKind::Merge,
@@ -353,6 +361,7 @@ impl Interpreter for InsertInterpreter {
                         table.clone(),
                         false,
                         table_meta_timestamps,
+                        self.ctx.get_cluster().get_nodes().len() > 1,
                     )?;
                     insert_plan.adjust_plan_id(&mut 0);
                     let mut build_res =
@@ -451,6 +460,7 @@ impl Interpreter for InsertInterpreter {
                     table1,
                     self.check_schema_cast(plan)?,
                     table_meta_timestamps,
+                    self.ctx.get_cluster().get_nodes().len() > 1,
                 )?;
 
                 insert_select_plan.adjust_plan_id(&mut 0);

@@ -28,5 +28,4 @@ if [[ -n "${JAVA_HOME:-}" ]]; then
 	export PATH="${JAVA_HOME}/bin:${PATH}"
 fi
 
-# PAIMON_VERIFY_ONLY=1 skips DDL and asserts Databend write results via Spark.
 uv run --project "${CURDIR}" "${CURDIR}/prepare_paimon_fs_data.py"

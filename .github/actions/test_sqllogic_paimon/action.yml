@@ -16,7 +16,7 @@ runs:
         AWS_ACCESS_KEY_ID: admin
         AWS_SECRET_ACCESS_KEY: password
         AWS_EC2_METADATA_DISABLED: true
-        PAIMON_WAREHOUSE: s3://paimon/
+        PAIMON_WAREHOUSE: s3://paimon/warehouse
         PAIMON_S3_ENDPOINT: http://127.0.0.1:9002
         PAIMON_S3_ACCESS_KEY: admin
         PAIMON_S3_SECRET_KEY: password
@@ -31,11 +31,16 @@ runs:
         aws --endpoint-url http://127.0.0.1:9002 s3 mb s3://paimon
         uv run --project tests/sqllogictests/scripts \
           tests/sqllogictests/scripts/prepare_paimon_fs_data.py
+        # paimon-rust 0.2.0 checks directory paths as exact S3 keys.
+        for path in regression.db regression.db/{write_append,write_append_part,write_pk,write_pk_part}; do
+          aws --endpoint-url http://127.0.0.1:9002 s3api put-object \
+            --bucket paimon --key "warehouse/${path}"
+        done
 
     - name: Run Paimon sqllogic tests
       shell: bash
       env:
-        PAIMON_WAREHOUSE: s3://paimon/
+        PAIMON_WAREHOUSE: s3://paimon/warehouse
         TEST_HANDLERS: http
       run: bash ./scripts/ci/ci-run-sqllogic-tests-without-sandbox.sh paimon
 

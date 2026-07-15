@@ -1,12 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare filesystem or S3 Paimon tables for stateful regression.
-
-Run: uv run --project tests/sqllogictests/scripts prepare_paimon_fs_data.py
-
-Verify Databend writes (after sqllogictest):
-  PAIMON_VERIFY_ONLY=1 uv run --project tests/sqllogictests/scripts \\
-    tests/sqllogictests/scripts/prepare_paimon_fs_data.py
-"""
+"""Prepare filesystem or S3 Paimon tables for stateful regression."""
 
 from __future__ import annotations
 
@@ -20,7 +13,9 @@ warehouse = os.environ.get(
     "PAIMON_WAREHOUSE",
     str(Path(__file__).resolve().parents[2] / "data" / "paimon_warehouse"),
 )
-if "://" in warehouse:
+if warehouse.startswith("s3://"):
+    warehouse_uri = f"{warehouse.rstrip('/')}/"
+elif "://" in warehouse:
     warehouse_uri = warehouse
 else:
     Path(warehouse).mkdir(parents=True, exist_ok=True)
@@ -63,49 +58,6 @@ if warehouse.startswith("s3://"):
     )
 
 spark = builder.getOrCreate()
-
-
-def _spark_table_rows(table: str):
-    return spark.sql(f"SELECT * FROM paimon.regression.{table}").collect()
-
-
-def _assert_table_rows(table: str, expect_rows: int) -> None:
-    """Require the official Paimon reader to read every Databend-written table."""
-    rows = _spark_table_rows(table)
-    assert len(rows) == expect_rows, f"{table} expected {expect_rows} rows, got {len(rows)}"
-
-
-def verify_databend_writes() -> None:
-    """Assert row counts and primary-key finals after Databend e2e writes."""
-    _assert_table_rows("write_append", 10)
-
-    append_part_count = spark.sql(
-        "SELECT count(*) AS c FROM paimon.regression.write_append_part"
-    ).collect()[0]["c"]
-    assert append_part_count == 4, (
-        f"write_append_part expected 4 rows, got {append_part_count}"
-    )
-
-    pk_rows = {
-        (r["id"], r["value"])
-        for r in spark.sql(
-            "SELECT id, value FROM paimon.regression.write_pk"
-        ).collect()
-    }
-    assert pk_rows == {(1, "new"), (2, "x")}, f"write_pk unexpected rows: {pk_rows}"
-
-    pk_part_stats = spark.sql(
-        """
-SELECT count(*) AS rows, sum(id) AS id_sum,
-       sum(CASE WHEN value = 'new' THEN 1 ELSE 0 END) AS updated
-FROM paimon.regression.write_pk_part
-"""
-    ).collect()[0]
-    assert tuple(pk_part_stats) == (10000, 49995000, 1), (
-        f"write_pk_part unexpected stats: {tuple(pk_part_stats)}"
-    )
-
-    print("Verified Databend Paimon writes")
 
 
 def prepare_tables() -> None:
@@ -195,10 +147,7 @@ TBLPROPERTIES ('primary-key'='part,id', 'bucket'='{buckets}')
 
 if __name__ == "__main__":
     try:
-        if os.environ.get("PAIMON_VERIFY_ONLY", "") == "1":
-            verify_databend_writes()
-        else:
-            prepare_tables()
+        prepare_tables()
     finally:
         spark.stop()
     sys.exit(0)

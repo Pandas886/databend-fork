@@ -183,8 +183,32 @@ async fn test_paimon_write_route_plan() -> databend_common_exception::Result<()>
         pk_table,
         false,
         TableMetaTimestamps::new(None, Duration::hours(1)),
+        true,
     )?;
     assert_pk_write_route_shape(&pk_plan);
+
+    // A single node keeps the local GlobalShuffle but must not synthesize a
+    // self Merge, because the dataflow diagram intentionally has no self edge.
+    let pk_table = databend_table(&warehouse.warehouse, &pk_id).await;
+    let (pk_select, pk_bindings) = dummy_select_plan(3);
+    let pk_schema = pk_select.output_schema()?;
+    let local_pk_plan = build_insert_select_physical_plan(
+        pk_select,
+        pk_schema.clone(),
+        pk_bindings,
+        pk_schema,
+        pk_table,
+        false,
+        TableMetaTimestamps::new(None, Duration::hours(1)),
+        false,
+    )?;
+    let local_insert = DistributedInsertSelect::from_physical_plan(&local_pk_plan)
+        .expect("single-node PK plan must start with DistributedInsertSelect");
+    assert!(
+        Exchange::from_physical_plan(&local_insert.input)
+            .is_some_and(|e| e.kind == FragmentKind::GlobalShuffle),
+        "single-node PK insert must retain local GlobalShuffle"
+    );
 
     let append_table = databend_table(&warehouse.warehouse, &append_id).await;
     let (append_select, append_bindings) = dummy_select_plan(2);
@@ -197,6 +221,7 @@ async fn test_paimon_write_route_plan() -> databend_common_exception::Result<()>
         append_table,
         false,
         TableMetaTimestamps::new(None, Duration::hours(1)),
+        true,
     )?;
     let append_text = format_plan(&append_plan);
     assert!(
@@ -236,6 +261,7 @@ async fn test_paimon_write_route_plan_preserves_select_merge()
         pk_table,
         false,
         TableMetaTimestamps::new(None, Duration::hours(1)),
+        true,
     )?;
     assert_pk_write_route_shape(&pk_plan);
 
@@ -251,6 +277,7 @@ async fn test_paimon_write_route_plan_preserves_select_merge()
         append_table,
         false,
         TableMetaTimestamps::new(None, Duration::hours(1)),
+        true,
     )?;
     let append_text = format_plan(&append_plan);
     assert!(

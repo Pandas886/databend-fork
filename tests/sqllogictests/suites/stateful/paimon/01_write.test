@@ -71,8 +71,6 @@ FROM paimon.regression.write_pk_part;
 10000 49995000 1
 
 # Empty INSERT must not create a snapshot.
-# PK empty INSERT is skipped: it fails with NetworkInboundChannelSet on the
-# route/exchange path. Append empty INSERT is used instead.
 query I
 SELECT count(*) FROM paimon.regression."write_append$snapshots";
 ----
