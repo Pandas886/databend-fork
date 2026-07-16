@@ -115,9 +115,9 @@ databend-common-storages-factory = { path = "src/query/storages/factory" }
 databend-common-storages-fuse = { path = "src/query/storages/fuse" }
 databend-common-storages-hive = { path = "src/query/storages/hive/hive" }
 databend-common-storages-iceberg = { path = "src/query/storages/iceberg" }
-databend-common-storages-paimon = { path = "src/query/storages/paimon" }
 databend-common-storages-information-schema = { path = "src/query/storages/information_schema" }
 databend-common-storages-orc = { path = "src/query/storages/orc" }
+databend-common-storages-paimon = { path = "src/query/storages/paimon" }
 databend-common-storages-parquet = { path = "src/query/storages/parquet" }
 databend-common-storages-stage = { path = "src/query/storages/stage" }
 databend-common-storages-stream = { path = "src/query/storages/stream" }
