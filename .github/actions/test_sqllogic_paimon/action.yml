@@ -29,8 +29,7 @@ runs:
         done
         curl -sf http://127.0.0.1:9002/minio/health/live
         aws --endpoint-url http://127.0.0.1:9002 s3 mb s3://paimon
-        uv run --project tests/sqllogictests/scripts \
-          tests/sqllogictests/scripts/prepare_paimon_fs_data.py
+        uv run --script tests/sqllogictests/scripts/prepare_paimon_fs_data.py
         # paimon-rust 0.2.0 checks directory paths as exact S3 keys.
         for path in regression.db regression.db/{write_append,write_append_part,write_pk,write_pk_part}; do
           aws --endpoint-url http://127.0.0.1:9002 s3api put-object \

@@ -667,7 +667,7 @@ Exchange
     ├── estimated rows: 200.00
     ├── Exchange(Build)
     │   ├── output columns: [t2.number (#1)]
-    │   ├── exchange type: Hash(t2.number (#1))
+    │   ├── exchange type: GlobalShuffle(t2.number (#1))
     │   └── TableScan
     │       ├── table: default.system.numbers
     │       ├── scan id: 1
@@ -680,7 +680,7 @@ Exchange
     │       └── estimated rows: 20.00
     └── Exchange(Probe)
         ├── output columns: [t1.number (#0)]
-        ├── exchange type: Hash(t1.number (#0))
+        ├── exchange type: GlobalShuffle(t1.number (#0))
         └── TableScan
             ├── table: default.system.numbers
             ├── scan id: 0

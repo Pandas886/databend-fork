@@ -75,7 +75,7 @@ Exchange
         │           └── estimated rows: 2.00
         └── Exchange(Probe)
             ├── output columns: [t1.a (#0), marker (#7)]
-            ├── exchange type: Hash(a (#0))
+            ├── exchange type: GlobalShuffle(a (#0))
             └── HashJoin
                 ├── output columns: [t1.a (#0), marker (#7)]
                 ├── join type: RIGHT MARK
@@ -104,7 +104,7 @@ Exchange
                 │           └── estimated rows: 2.00
                 └── Exchange(Probe)
                     ├── output columns: [t1.a (#0)]
-                    ├── exchange type: Hash(a (#0))
+                    ├── exchange type: GlobalShuffle(a (#0))
                     └── TableScan
                         ├── table: default.d_subquery.t1
                         ├── scan id: 0
@@ -155,7 +155,7 @@ Exchange
         │       └── estimated rows: 2.00
         └── Exchange(Probe)
             ├── output columns: [t1.a (#0), in_match (#3)]
-            ├── exchange type: Hash(t1.a (#0))
+            ├── exchange type: GlobalShuffle(t1.a (#0))
             └── HashJoin
                 ├── output columns: [t1.a (#0), in_match (#3)]
                 ├── join type: RIGHT MARK
@@ -180,7 +180,7 @@ Exchange
                 │       └── estimated rows: 2.00
                 └── Exchange(Probe)
                     ├── output columns: [t1.a (#0)]
-                    ├── exchange type: Hash(t1.a (#0))
+                    ├── exchange type: GlobalShuffle(t1.a (#0))
                     └── TableScan
                         ├── table: default.d_subquery.t1
                         ├── scan id: 0

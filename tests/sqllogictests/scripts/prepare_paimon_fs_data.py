@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.12"
+# dependencies = ["pyspark==3.5.3"]
+# ///
 """Prepare filesystem or S3 Paimon tables for stateful regression."""
 
 from __future__ import annotations

@@ -28,4 +28,4 @@ if [[ -n "${JAVA_HOME:-}" ]]; then
 	export PATH="${JAVA_HOME}/bin:${PATH}"
 fi
 
-uv run --project "${CURDIR}" "${CURDIR}/prepare_paimon_fs_data.py"
+uv run --script "${CURDIR}/prepare_paimon_fs_data.py"

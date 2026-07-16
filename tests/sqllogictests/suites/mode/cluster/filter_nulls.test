@@ -104,7 +104,7 @@ Exchange
     ├── estimated rows: 985.82
     ├── Exchange(Build)
     │   ├── output columns: [table3.value (#2)]
-    │   ├── exchange type: Hash(table3.value (#2))
+    │   ├── exchange type: GlobalShuffle(table3.value (#2))
     │   └── TableScan
     │       ├── table: default.default.table3
     │       ├── scan id: 2
@@ -128,7 +128,7 @@ Exchange
         ├── estimated rows: 985.82
         ├── Exchange(Build)
         │   ├── output columns: [table2.value (#1)]
-        │   ├── exchange type: Hash(table2.value (#1))
+        │   ├── exchange type: GlobalShuffle(table2.value (#1))
         │   └── TableScan
         │       ├── table: default.default.table2
         │       ├── scan id: 1
@@ -143,7 +143,7 @@ Exchange
         │       └── estimated rows: 1000.00
         └── Exchange(Probe)
             ├── output columns: [table1.value (#0)]
-            ├── exchange type: Hash(table1.value (#0))
+            ├── exchange type: GlobalShuffle(table1.value (#0))
             └── TableScan
                 ├── table: default.default.table1
                 ├── scan id: 0
@@ -219,7 +219,7 @@ Exchange
     ├── estimated rows: 985.82
     ├── Exchange(Build)
     │   ├── output columns: [table2.value (#1)]
-    │   ├── exchange type: Hash(table2.value (#1))
+    │   ├── exchange type: GlobalShuffle(table2.value (#1))
     │   └── TableScan
     │       ├── table: default.default.table2
     │       ├── scan id: 1
@@ -233,7 +233,7 @@ Exchange
     │       └── estimated rows: 1000.00
     └── Exchange(Probe)
         ├── output columns: [table1.value (#0)]
-        ├── exchange type: Hash(table1.value (#0))
+        ├── exchange type: GlobalShuffle(table1.value (#0))
         └── TableScan
             ├── table: default.default.table1
             ├── scan id: 0
