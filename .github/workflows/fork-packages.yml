@@ -10,6 +10,11 @@ name: Fork Packages
 on:
   workflow_dispatch:
     inputs:
+      source_ref:
+        description: Branch, tag, or commit to package. Leave empty to use the workflow ref.
+        required: false
+        type: string
+        default: ""
       version:
         description: |
           Package version string used in tarball names.
@@ -38,11 +43,14 @@ jobs:
       sha: ${{ steps.meta.outputs.sha }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.source_ref || github.ref }}
+          fetch-depth: 0
       - name: Resolve version
         id: meta
         shell: bash
         run: |
-          sha="${GITHUB_SHA}"
+          sha="$(git rev-parse HEAD)"
           short_sha="${sha:0:10}"
           version="${{ inputs.version }}"
           if [[ -z "${version}" ]]; then
@@ -59,13 +67,19 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
+          ref: ${{ needs.prepare.outputs.sha }}
           fetch-depth: 0
       - name: Build
         uses: ./.github/actions/build_macos
         with:
           target: aarch64-apple-darwin
           artifacts: query,meta,metactl
-          upload: "true"
+          upload: "false"
+      - name: Upload binaries
+        uses: ./.github/actions/artifact_upload
+        with:
+          sha: ${{ needs.prepare.outputs.sha }}
+          target: aarch64-apple-darwin
 
   build_linux_x86:
     needs: prepare
@@ -74,6 +88,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
+          ref: ${{ needs.prepare.outputs.sha }}
           fetch-depth: 0
       - name: Free disk space
         shell: bash
@@ -135,6 +150,8 @@ jobs:
           - target: x86_64-unknown-linux-gnu
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
       - name: Download binaries
         uses: ./.github/actions/artifact_download
         with:
