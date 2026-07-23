@@ -42,8 +42,7 @@ if ! sql "CREATE CATALOG paimon_fs TYPE = PAIMON CONNECTION = (METASTORE = 'file
 fi
 
 # Probe that cluster write fixtures exist (fail, do not skip).
-# DISTINCT: $snapshots is scanned on every node and duplicates rows in cluster mode.
-if ! sql "SELECT count(DISTINCT snapshot_id) FROM paimon_fs.regression.\"write_pk_part_b2\$snapshots\";" >/dev/null; then
+if ! sql "SELECT count(snapshot_id) FROM paimon_fs.regression.\"write_pk_part_b2\$snapshots\";" >/dev/null; then
 	echo "FAIL: cluster write fixture write_pk_part_b2 not available"
 	exit 1
 fi
@@ -54,7 +53,7 @@ run_bucket_case() {
 	local fq="paimon_fs.regression.${table}"
 
 	echo "===== bucket=${buckets} before snapshot ====="
-	before=$(sql "SELECT count(DISTINCT snapshot_id) FROM paimon_fs.regression.\"${table}\$snapshots\";" | tail -n 1 | tr -d '[:space:]')
+	before=$(sql "SELECT count(snapshot_id) FROM paimon_fs.regression.\"${table}\$snapshots\";" | tail -n 1 | tr -d '[:space:]')
 	echo "snapshots_before=${before}"
 
 	echo "===== bucket=${buckets} insert ====="
@@ -62,7 +61,7 @@ run_bucket_case() {
 	echo "insert_ok"
 
 	echo "===== bucket=${buckets} after snapshot ====="
-	after=$(sql "SELECT count(DISTINCT snapshot_id) FROM paimon_fs.regression.\"${table}\$snapshots\";" | tail -n 1 | tr -d '[:space:]')
+	after=$(sql "SELECT count(snapshot_id) FROM paimon_fs.regression.\"${table}\$snapshots\";" | tail -n 1 | tr -d '[:space:]')
 	echo "snapshots_after=${after}"
 	delta=$((after - before))
 	echo "snapshot_delta=${delta}"
@@ -72,10 +71,10 @@ run_bucket_case() {
 	fi
 
 	echo "===== bucket=${buckets} row counts ====="
-	# PK-merged total from the new snapshot (dedupe cluster-duplicated system rows).
-	sql "SELECT max(total_record_count) FROM paimon_fs.regression.\"${table}\$snapshots\";"
+	# PK-merged total from the new snapshot.
+	sql "SELECT total_record_count FROM paimon_fs.regression.\"${table}\$snapshots\";"
 	# Per-partition merged counts from partition stats.
-	sql "SELECT \`partition\`, max(record_count) AS c FROM paimon_fs.regression.\"${table}\$partitions\" GROUP BY \`partition\` ORDER BY \`partition\`;"
+	sql "SELECT \`partition\`, record_count FROM paimon_fs.regression.\"${table}\$partitions\" ORDER BY \`partition\`;"
 }
 
 for buckets in 2 8 64; do

@@ -59,4 +59,4 @@ echo "===== pk table keys ====="
 echo 'SELECT min_key, max_key FROM paimon_fs.regression."pk_t$files" ORDER BY min_key;' | bendsql_connect_root
 
 echo "===== unknown suffix rejected ====="
-echo 'SELECT count() FROM paimon_fs.regression."append_t$unknown";' | bendsql_connect_root 2>&1 | rg "^Error:" | head -1
+echo 'SELECT count() FROM paimon_fs.regression."append_t$unknown";' | bendsql_connect_root 2>&1 | grep "^Error:" | head -1

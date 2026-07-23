@@ -262,7 +262,7 @@ CommitSink
                     ├── estimated rows: 0.00
                     ├── Exchange(Build)
                     │   ├── output columns: [stage._$1 (#0)]
-                    │   ├── exchange type: GlobalShuffle(CAST(t2.a (#0) AS Decimal(38, 5) NULL))
+                    │   ├── exchange type: Hash(CAST(t2.a (#0) AS Decimal(38, 5) NULL))
                     │   └── TableScan
                     │       ├── table: default.system.stage
                     │       ├── scan id: 0
@@ -275,7 +275,7 @@ CommitSink
                     │       └── estimated rows: 0.00
                     └── Exchange(Probe)
                         ├── output columns: [t1.a (#1), t1._row_id (#2)]
-                        ├── exchange type: GlobalShuffle(CAST(t1.a (#1) AS Decimal(38, 5) NULL))
+                        ├── exchange type: Hash(CAST(t1.a (#1) AS Decimal(38, 5) NULL))
                         └── TableScan
                             ├── table: default.default.t1
                             ├── scan id: 1

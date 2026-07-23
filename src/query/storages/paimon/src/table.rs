@@ -265,13 +265,18 @@ impl PaimonTable {
         let plan = map_paimon_result(read_builder.new_scan().plan().await)?;
         let mut read_rows = 0usize;
         let mut read_bytes = 0usize;
+        let mut is_exact = true;
         let parts: Vec<PartInfoPtr> = plan
             .splits()
             .iter()
             .map(|split| {
-                read_rows += split
-                    .merged_row_count()
-                    .unwrap_or_else(|| split.row_count()) as usize;
+                read_rows += match split.merged_row_count() {
+                    Some(row_count) => row_count,
+                    None => {
+                        is_exact = false;
+                        split.row_count()
+                    }
+                } as usize;
                 read_bytes += split
                     .data_files()
                     .iter()
@@ -291,8 +296,13 @@ impl PaimonTable {
         {
             read_rows = read_rows.min(limit);
         }
+        let statistics = if is_exact {
+            PartStatistics::new_exact(read_rows, read_bytes, parts.len(), parts.len())
+        } else {
+            PartStatistics::new_estimated(None, read_rows, read_bytes, parts.len(), parts.len())
+        };
         Ok((
-            PartStatistics::new_exact(read_rows, read_bytes, parts.len(), parts.len()),
+            statistics,
             Partitions::create(PartitionsShuffleKind::Mod, parts),
         ))
     }

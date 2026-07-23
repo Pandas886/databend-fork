@@ -26,4 +26,4 @@ echo "===== projection and filter with limit ====="
 echo "SELECT id FROM paimon_fs.regression.append_t WHERE id >= 2 ORDER BY id LIMIT 2;" | bendsql_connect_root
 
 echo "===== read-only DDL in paimon catalog ====="
-echo "CREATE TABLE paimon_fs.regression.new_t(id int);" | bendsql_connect_root 2>&1 | rg -i "read-only|not supported"
+echo "CREATE TABLE paimon_fs.regression.new_t(id int);" | bendsql_connect_root 2>&1 | grep -Ei "read-only|not supported"

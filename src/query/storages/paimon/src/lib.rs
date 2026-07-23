@@ -23,7 +23,7 @@ mod table;
 mod write;
 
 pub use catalog::PaimonCatalog;
-pub use catalog::PaimonCreator;
+pub use catalog::table_from_info;
 pub use partition::PaimonPartInfo;
 pub use partition::SerializableDataSplit;
 pub use predicate::PaimonPredicateAnalysis;

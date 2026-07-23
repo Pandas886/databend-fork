@@ -19,7 +19,6 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use databend_common_ast::ast::Engine;
 use databend_common_catalog::catalog::Catalog;
-use databend_common_catalog::catalog::CatalogCreator;
 use databend_common_catalog::catalog::StorageDescription;
 use databend_common_catalog::database::Database;
 use databend_common_catalog::table::Table;
@@ -117,12 +116,10 @@ use crate::parse_system_name;
 use crate::system::PaimonSystemTable;
 use crate::table::PaimonTable;
 
-#[derive(Debug)]
-pub struct PaimonCreator;
-
-impl CatalogCreator for PaimonCreator {
-    fn try_create(&self, info: Arc<CatalogInfo>) -> Result<Arc<dyn Catalog>> {
-        Ok(Arc::new(PaimonCatalog::try_create(info)?))
+pub fn table_from_info(table_info: &TableInfo) -> Result<Arc<dyn Table>> {
+    match parse_system_name(&table_info.name) {
+        ParsedName::System { .. } => PaimonSystemTable::try_create(table_info.clone()),
+        _ => PaimonTable::try_create(table_info.clone()).map(|table| table.into()),
     }
 }
 
@@ -274,12 +271,7 @@ impl Catalog for PaimonCatalog {
     }
 
     fn get_table_by_info(&self, table_info: &TableInfo) -> Result<Arc<dyn Table>> {
-        // System tables (`base$kind`) rebuild into `PaimonSystemTable`; everything
-        // else is a base data table.
-        match parse_system_name(&table_info.name) {
-            ParsedName::System { .. } => PaimonSystemTable::try_create(table_info.clone()),
-            _ => PaimonTable::try_create(table_info.clone()).map(|table| table.into()),
-        }
+        table_from_info(table_info)
     }
 
     async fn get_table_meta_by_id(&self, _table_id: MetaId) -> Result<Option<SeqV<TableMeta>>> {

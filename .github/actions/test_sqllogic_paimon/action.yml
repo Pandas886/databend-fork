@@ -39,7 +39,6 @@ runs:
     - name: Run Paimon sqllogic tests
       shell: bash
       env:
-        PAIMON_WAREHOUSE: s3://paimon/warehouse
         TEST_HANDLERS: http
       run: bash ./scripts/ci/ci-run-sqllogic-tests-without-sandbox.sh paimon
 

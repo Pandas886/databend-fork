@@ -73,7 +73,7 @@ Sort(Final)
                                 │       └── estimated rows: 0.00
                                 └── Exchange(Probe)
                                     ├── output columns: [orders.o_orderkey (#0), orders.o_custkey (#1), orders.o_orderdate (#4), orders.o_shippriority (#7)]
-                                    ├── exchange type: GlobalShuffle(orders.o_custkey (#1))
+                                    ├── exchange type: Hash(orders.o_custkey (#1))
                                     └── TableScan
                                         ├── table: default.default.orders
                                         ├── scan id: 0

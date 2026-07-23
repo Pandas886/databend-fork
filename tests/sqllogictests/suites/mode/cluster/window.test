@@ -90,7 +90,7 @@ Exchange
         ├── estimated rows: 10.00
         └── Exchange
             ├── output columns: [e.name (#1), e.salary (#3), d.department_name (#5), d.department_id (#4)]
-            ├── exchange type: GlobalShuffle(d.department_id (#4))
+            ├── exchange type: Hash(d.department_id (#4))
             └── HashJoin
                 ├── output columns: [e.name (#1), e.salary (#3), d.department_name (#5), d.department_id (#4)]
                 ├── join type: INNER
@@ -160,7 +160,7 @@ Exchange
             ├── estimated rows: 50.00
             └── Exchange
                 ├── output columns: [numbers.number (#0)]
-                ├── exchange type: GlobalShuffle(numbers.number (#0) % 3)
+                ├── exchange type: Hash(numbers.number (#0) % 3)
                 └── TableScan
                     ├── table: default.system.numbers
                     ├── scan id: 0
@@ -226,7 +226,7 @@ Limit
                         ├── estimated rows: 0.00
                         └── Exchange
                             ├── output columns: [sales.customer_id (#2), sales.net_paid (#5)]
-                            ├── exchange type: GlobalShuffle(sales.customer_id (#2))
+                            ├── exchange type: Hash(sales.customer_id (#2))
                             └── TableScan
                                 ├── table: default.default.sales
                                 ├── scan id: 0

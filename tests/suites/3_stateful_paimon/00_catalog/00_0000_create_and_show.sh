@@ -38,4 +38,4 @@ echo "===== fully-qualified resolution (catalog -> db -> table) ====="
 echo "SELECT count(*) FROM paimon_fs.regression.append_t;" | bendsql_connect_root
 
 echo "===== read-only DDL rejected (database level) ====="
-echo "CREATE DATABASE paimon_fs.new_db;" | bendsql_connect_root 2>&1 | rg -i "read-only|not supported"
+echo "CREATE DATABASE paimon_fs.new_db;" | bendsql_connect_root 2>&1 | grep -Ei "read-only|not supported"

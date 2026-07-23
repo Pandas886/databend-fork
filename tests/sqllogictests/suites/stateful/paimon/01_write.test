@@ -1,14 +1,10 @@
-# Warehouse path is substituted by databend-sqllogictests as $PAIMON_WAREHOUSE,
-# matching stateful Paimon shell tests:
-#   PAIMON_WAREHOUSE / PAIMON_WAREHOUSE_PATH / ${TESTS_DATA_DIR}/paimon_warehouse
-#   / <cwd>/tests/data/paimon_warehouse
 statement ok
 DROP CATALOG IF EXISTS paimon;
 
 statement ok
 CREATE CATALOG paimon TYPE = PAIMON CONNECTION = (
     METASTORE = 'filesystem',
-    WAREHOUSE = '$PAIMON_WAREHOUSE',
+    WAREHOUSE = 's3://paimon/warehouse',
     "s3.endpoint" = 'http://127.0.0.1:9002',
     "s3.access-key" = 'admin',
     "s3.secret-key" = 'password',

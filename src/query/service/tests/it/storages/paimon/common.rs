@@ -43,6 +43,7 @@ use paimon::spec::DataType;
 use paimon::spec::IntType;
 use paimon::spec::Schema;
 use paimon::spec::VarCharType;
+use paimon::table::BranchManager;
 use tempfile::TempDir;
 
 static PAIMON_IT_LOCK: Mutex<()> = Mutex::new(());
@@ -188,6 +189,42 @@ pub async fn setup_pk_table(warehouse: &str) -> Identifier {
     let table = catalog.get_table(&identifier).await.expect("get table");
     write_batch(&table, vec![1], vec!["old"]).await;
     write_batch(&table, vec![1], vec!["new"]).await;
+    identifier
+}
+
+pub async fn setup_branch_table(warehouse: &str) -> Identifier {
+    let catalog = filesystem_catalog(warehouse);
+    catalog
+        .create_database("db", false, HashMap::new())
+        .await
+        .expect("create db");
+    let schema = Schema::builder()
+        .column("part", DataType::Int(IntType::new()))
+        .column("id", DataType::Int(IntType::new()))
+        .column("name", DataType::VarChar(VarCharType::string_type()))
+        .partition_keys(["part"])
+        .build()
+        .expect("schema");
+    let identifier = Identifier::new("db", "branch_t");
+    catalog
+        .create_table(&identifier, schema, false)
+        .await
+        .expect("create branch table");
+    let table = catalog.get_table(&identifier).await.expect("get table");
+    BranchManager::new(table.file_io().clone(), table.location().to_string())
+        .create_branch("dev")
+        .await
+        .expect("create branch");
+    let branch_table = paimon::Table::new(
+        table.file_io().clone(),
+        Identifier::new("db", "branch_t$branch_dev"),
+        format!("{}/branch/branch-dev", table.location()),
+        table.schema().clone(),
+        None,
+    );
+    write_partitioned_batch(&branch_table, 0, vec![1], vec!["branch".to_string()]).await;
+    write_partitioned_batch(&table, 0, vec![1], vec!["main-0".to_string()]).await;
+    write_partitioned_batch(&table, 1, vec![2], vec!["main-1".to_string()]).await;
     identifier
 }
 

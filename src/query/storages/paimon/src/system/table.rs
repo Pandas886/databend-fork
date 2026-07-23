@@ -41,6 +41,7 @@ use databend_common_pipeline::sources::AsyncSource;
 use databend_common_pipeline::sources::AsyncSourcer;
 use databend_common_pipeline::sources::EmptySource;
 use paimon::CatalogFactory;
+use paimon::catalog::Identifier;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -80,6 +81,7 @@ pub struct PaimonSystemTable {
     info: TableInfo,
     kind: PaimonSystemTableKind,
     descriptor: PaimonTableDescriptor,
+    catalog_identifier: Identifier,
     catalog_options: HashMap<String, String>,
 }
 
@@ -98,6 +100,7 @@ impl PaimonSystemTable {
             location: table.location().to_string(),
             schema: table.schema().clone(),
         };
+        let catalog_identifier = catalog_identifier(&name, &descriptor)?;
         let descriptor_json = serde_json::to_string(&descriptor).map_err(|err| {
             ErrorCode::Internal(format!("serialize paimon table descriptor failed: {err:?}"))
         })?;
@@ -127,6 +130,7 @@ impl PaimonSystemTable {
             info,
             kind,
             descriptor,
+            catalog_identifier,
             catalog_options,
         }))
     }
@@ -143,11 +147,13 @@ impl PaimonSystemTable {
             }
         };
         let descriptor = parse_descriptor(&info)?;
+        let catalog_identifier = catalog_identifier(&info.name, &descriptor)?;
         let catalog_options = catalog_options_from_info(&info)?;
         Ok(Arc::new(Self {
             info,
             kind,
             descriptor,
+            catalog_identifier,
             catalog_options,
         }))
     }
@@ -217,6 +223,7 @@ impl Table for PaimonSystemTable {
                     output,
                     self.kind,
                     self.descriptor.clone(),
+                    self.catalog_identifier.clone(),
                     self.catalog_options.clone(),
                     projection.clone(),
                 )
@@ -231,6 +238,7 @@ struct PaimonSystemSource {
     finished: bool,
     kind: PaimonSystemTableKind,
     descriptor: PaimonTableDescriptor,
+    catalog_identifier: Identifier,
     catalog_options: HashMap<String, String>,
     projection: Option<Projection>,
 }
@@ -241,6 +249,7 @@ impl PaimonSystemSource {
         output: Arc<OutputPort>,
         kind: PaimonSystemTableKind,
         descriptor: PaimonTableDescriptor,
+        catalog_identifier: Identifier,
         catalog_options: HashMap<String, String>,
         projection: Option<Projection>,
     ) -> Result<ProcessorPtr> {
@@ -248,6 +257,7 @@ impl PaimonSystemSource {
             finished: false,
             kind,
             descriptor,
+            catalog_identifier,
             catalog_options,
             projection,
         })
@@ -283,21 +293,27 @@ impl AsyncSource for PaimonSystemSource {
 
         let options = options_from_map(&self.catalog_options)?;
         let catalog = map_paimon_result(CatalogFactory::create(options).await)?;
-        let loaded = map_paimon_result(catalog.get_table(&self.descriptor.identifier).await)?;
+        let loaded = map_paimon_result(catalog.get_table(&self.catalog_identifier).await)?;
         let table = paimon::Table::new(
             loaded.file_io().clone(),
-            loaded.identifier().clone(),
-            loaded.location().to_string(),
-            loaded.schema().clone(),
+            self.descriptor.identifier.clone(),
+            self.descriptor.location.clone(),
+            self.descriptor.schema.clone(),
             loaded.rest_env().cloned(),
         );
-        let block = read_system_table(
-            self.kind,
-            catalog,
-            self.descriptor.identifier.clone(),
-            table,
-        )
-        .await?;
+        let block =
+            read_system_table(self.kind, catalog, self.catalog_identifier.clone(), table).await?;
         Ok(Some(self.apply_projection(block)))
+    }
+}
+
+fn catalog_identifier(name: &str, descriptor: &PaimonTableDescriptor) -> Result<Identifier> {
+    match parse_system_name(name) {
+        ParsedName::System { base, .. } => {
+            Ok(Identifier::new(descriptor.identifier.database(), base))
+        }
+        _ => Err(ErrorCode::Internal(format!(
+            "not a paimon system table: {name}"
+        ))),
     }
 }

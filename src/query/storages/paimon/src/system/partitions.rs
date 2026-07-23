@@ -25,6 +25,7 @@ use databend_common_expression::types::StringType;
 use databend_common_expression::types::TimestampType;
 use paimon::Catalog;
 use paimon::catalog::Identifier;
+use paimon::catalog::list_partitions_from_file_system;
 
 use super::format_partition_spec;
 use super::json;
@@ -39,7 +40,11 @@ pub async fn read(
     // Use the catalog's own listing so metastore-backed catalogs (e.g. REST)
     // carry through audit fields (created_by/updated_by/options); the filesystem
     // catalog falls back to deriving them from the manifest tree.
-    let partitions = map_paimon_result(catalog.list_partitions(identifier).await)?;
+    let partitions = if table.identifier() == identifier {
+        map_paimon_result(catalog.list_partitions(identifier).await)?
+    } else {
+        map_paimon_result(list_partitions_from_file_system(table).await)?
+    };
     let partition_keys = table.schema().partition_keys().to_vec();
 
     let mut partition = Vec::with_capacity(partitions.len());

@@ -66,7 +66,7 @@ pub enum Client {
 
 impl Client {
     pub async fn query(&mut self, sql: &str) -> Result<DBOutput<ColumnType>> {
-        let sql = replace_placeholders(sql);
+        let sql = replace_rand_values(sql);
         match self {
             Client::MySQL(client) => client.query(&sql).await,
             Client::Http(client) => client.query(&sql).await,
@@ -104,14 +104,6 @@ impl Client {
     }
 }
 
-fn replace_placeholders(input: &str) -> Cow<'_, str> {
-    let with_rand = replace_rand_values(input);
-    if !with_rand.contains("$PAIMON_WAREHOUSE") {
-        return with_rand;
-    }
-    Cow::Owned(with_rand.replace("$PAIMON_WAREHOUSE", &resolve_paimon_warehouse()))
-}
-
 fn replace_rand_values(input: &str) -> Cow<'_, str> {
     let re = Regex::new(r"\$RAND_(\d+)_(\d+)").unwrap();
     re.replace_all(input, |caps: &regex::Captures| {
@@ -121,57 +113,4 @@ fn replace_rand_values(input: &str) -> Cow<'_, str> {
         let rand_value = rng.gen_range(m..n);
         rand_value.to_string()
     })
-}
-
-/// Resolve like stateful Paimon shell tests:
-/// `PAIMON_WAREHOUSE` / `PAIMON_WAREHOUSE_PATH` / `${TESTS_DATA_DIR}/paimon_warehouse`
-/// / `<cwd>/tests/data/paimon_warehouse`.
-fn resolve_paimon_warehouse() -> String {
-    for key in ["PAIMON_WAREHOUSE", "PAIMON_WAREHOUSE_PATH"] {
-        if let Ok(path) = std::env::var(key)
-            && !path.is_empty()
-        {
-            return path;
-        }
-    }
-    if let Ok(tests_data_dir) = std::env::var("TESTS_DATA_DIR")
-        && !tests_data_dir.is_empty()
-    {
-        return format!("{tests_data_dir}/paimon_warehouse");
-    }
-    std::env::current_dir()
-        .map(|cwd| cwd.join("tests/data/paimon_warehouse"))
-        .unwrap_or_else(|_| std::path::PathBuf::from("tests/data/paimon_warehouse"))
-        .to_string_lossy()
-        .into_owned()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn replace_placeholders_leaves_plain_sql() {
-        let sql = "SELECT 1";
-        assert!(matches!(
-            replace_placeholders(sql),
-            Cow::Borrowed("SELECT 1")
-        ));
-    }
-
-    #[test]
-    fn resolve_paimon_warehouse_defaults_under_tests_data() {
-        // Clear override env so default path is exercised when unset.
-        // SAFETY: this unit test is the only code touching these keys here.
-        unsafe {
-            std::env::remove_var("PAIMON_WAREHOUSE");
-            std::env::remove_var("PAIMON_WAREHOUSE_PATH");
-            std::env::remove_var("TESTS_DATA_DIR");
-        }
-        let path = resolve_paimon_warehouse();
-        assert!(
-            path.ends_with("tests/data/paimon_warehouse"),
-            "unexpected default warehouse path: {path}"
-        );
-    }
 }

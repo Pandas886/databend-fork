@@ -18,12 +18,15 @@ use common::databend_table;
 use common::drop_paimon_catalog_sql;
 use common::part_infos;
 use common::setup_append_table;
+use common::setup_branch_table;
 use common::setup_multi_split_append_table;
 use common::setup_paimon_fixture;
 use common::setup_pk_table;
 use databend_common_catalog::table::Table;
 use databend_common_expression::DataBlock;
+use databend_common_expression::ScalarRef;
 use databend_common_expression::types::AccessType;
+use databend_common_expression::types::NumberScalar;
 use databend_common_expression::types::StringType;
 use databend_common_sql::executor::table_read_plan::ToReadDataSourcePlan;
 use databend_common_storages_paimon::PaimonTable;
@@ -32,6 +35,7 @@ use databend_common_storages_paimon::can_push_limit;
 use databend_common_storages_paimon::reset_table_load_count_for_test;
 use databend_common_storages_paimon::table_load_count_for_test;
 use databend_query::sessions::TableContextSettings;
+use databend_query::test_kits::TestFixture;
 use futures::StreamExt;
 use futures::TryStreamExt;
 use paimon::Catalog;
@@ -44,6 +48,24 @@ use pipeline::total_rows;
 
 use super::common;
 use super::pipeline;
+
+fn scalar_as_u64(block: &DataBlock) -> u64 {
+    match block.get_by_offset(0).index(0).unwrap() {
+        ScalarRef::Number(NumberScalar::UInt64(value)) => value,
+        ScalarRef::Number(NumberScalar::Int64(value)) => value as u64,
+        other => panic!("unexpected scalar: {other:?}"),
+    }
+}
+
+async fn query_count(fixture: &TestFixture, sql: &str) -> databend_common_exception::Result<u64> {
+    let blocks = fixture
+        .execute_query(sql)
+        .await?
+        .try_collect::<Vec<DataBlock>>()
+        .await?;
+    let block = DataBlock::concat(&blocks)?;
+    Ok(scalar_as_u64(&block))
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_append_table_via_pipeline() -> databend_common_exception::Result<()> {
@@ -102,6 +124,43 @@ async fn test_no_filter_limit_one_row_via_sql() -> databend_common_exception::Re
     let block = stream.next().await.transpose()?.expect("result block");
     assert_eq!(block.num_rows(), 1);
     assert_eq!(collect_id_name_rows(&[block]).len(), 1);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_branch_system_tables_via_sql() -> databend_common_exception::Result<()> {
+    let wh = TestWarehouse::new();
+    setup_branch_table(&wh.warehouse).await;
+    let fixture = setup_paimon_fixture().await?;
+    fixture.execute_command(drop_paimon_catalog_sql()).await?;
+    fixture
+        .execute_command(&create_paimon_catalog_sql(&wh.warehouse))
+        .await?;
+
+    assert_eq!(
+        query_count(
+            &fixture,
+            "SELECT count() FROM paimon_it.db.\"branch_t$branch_dev$snapshots\"",
+        )
+        .await?,
+        1
+    );
+    assert_eq!(
+        query_count(
+            &fixture,
+            "SELECT count() FROM paimon_it.db.\"branch_t$branch_dev$partitions\"",
+        )
+        .await?,
+        1
+    );
+    assert_eq!(
+        query_count(
+            &fixture,
+            "SELECT count() FROM paimon_it.db.\"branch_t$partitions\"",
+        )
+        .await?,
+        2
+    );
     Ok(())
 }
 

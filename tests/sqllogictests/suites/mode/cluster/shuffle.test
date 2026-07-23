@@ -60,7 +60,7 @@ Sort(Final)
             │           ├── estimated rows: 14.00
             │           └── Exchange
             │               ├── output columns: [t2.number (#1)]
-            │               ├── exchange type: GlobalShuffle(t2.number (#1))
+            │               ├── exchange type: Hash(t2.number (#1))
             │               └── TableScan
             │                   ├── table: default.default.t2
             │                   ├── scan id: 1
@@ -74,7 +74,7 @@ Sort(Final)
             │                   └── estimated rows: 14.00
             └── Exchange(Probe)
                 ├── output columns: [t1.number (#0)]
-                ├── exchange type: GlobalShuffle(t1.number (#0))
+                ├── exchange type: Hash(t1.number (#0))
                 └── TableScan
                     ├── table: default.default.t1
                     ├── scan id: 0
