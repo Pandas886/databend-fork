@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+set -euo pipefail
+
 CURDIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 . "$CURDIR"/../../../shell_env.sh
 
@@ -40,13 +42,15 @@ echo "===== distributed scan plan ====="
 # signal here.
 plan=$(echo "EXPLAIN SELECT id FROM paimon_fs.regression.append_t;" | bendsql_connect_root)
 
-if echo "${plan}" | rg -q "Exchange"; then
+if grep -q "Exchange" <<<"${plan}"; then
 	echo "distributed_scan=true"
 else
 	echo "distributed_scan=false"
 fi
 
-echo "${plan}" | rg -o "partitions total: [0-9]+" | head -n 1
+partition_line=$(grep -m 1 -oE "partitions total: [0-9]+" <<<"${plan}")
+echo "${partition_line}"
 
-echo "${plan}" | rg -q "Exchange"
-test "$(echo "${plan}" | rg -o 'partitions total: [0-9]+' | rg -o '[0-9]+')" -ge 4
+grep -q "Exchange" <<<"${plan}"
+partition_count=${partition_line##*: }
+test "${partition_count}" -ge 4

@@ -28,7 +28,7 @@ fi
 WAREHOUSE_PATH="$(cd "${WAREHOUSE_PATH}" && pwd)"
 
 echo "===== prepare warehouse ====="
-if ! "${CURDIR}"/../../../sqllogictests/scripts/prepare_paimon_fs_data.sh >/dev/null; then
+if ! "${CURDIR}"/../../../sqllogictests/scripts/prepare_paimon_fs_data.sh >/dev/null 2>&1; then
 	echo "FAIL: paimon warehouse prepare failed"
 	exit 1
 fi
